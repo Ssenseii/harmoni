@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLineEdit, QComboBox, QCheckBox,
     QGroupBox, QFormLayout, QFileDialog, QMessageBox,
     QSpacerItem, QSizePolicy, QScrollArea, QFrame,
-    QProgressBar
+    QProgressBar, QSpinBox
 )
 from PySide6.QtCore import Signal
 
@@ -244,6 +244,16 @@ class SettingsView(QWidget):
         self.retry_input.setMaximumWidth(200)
         download_layout.addWidget(self.retry_input)
 
+        concurrent_label = QLabel("Max concurrent downloads")
+        concurrent_label.setObjectName("muted")
+        download_layout.addWidget(concurrent_label)
+        self.concurrent_spinbox = QSpinBox()
+        self.concurrent_spinbox.setMinimum(1)
+        self.concurrent_spinbox.setMaximum(8)
+        self.concurrent_spinbox.setValue(3)
+        self.concurrent_spinbox.setMaximumWidth(200)
+        download_layout.addWidget(self.concurrent_spinbox)
+
         layout.addWidget(download_group)
 
         # Metadata Settings Group
@@ -313,6 +323,7 @@ class SettingsView(QWidget):
         self.redirect_uri_input.setText(self.config.get("spotify_redirect_uri", "http://127.0.0.1:8888/callback"))
         self.sleep_input.setText(str(self.config.get("sleep_between", 5)))
         self.retry_input.setText(str(self.config.get("retry_attempts", 3)))
+        self.concurrent_spinbox.setValue(self.config.get("max_concurrent_downloads", 3))
         self.metadata_check.setChecked(self.config.get("enable_metadata_embedding", True))
         self.template_combo.setCurrentText(self.config.get("metadata_template", "basic"))
         self.musicbrainz_check.setChecked(self.config.get("enable_musicbrainz_lookup", True))
@@ -586,6 +597,7 @@ class SettingsView(QWidget):
             self.config["spotify_client_id"] = self.client_id_input.text().strip()
             self.config["sleep_between"] = self._safe_int(self.sleep_input.text(), 5)
             self.config["retry_attempts"] = self._safe_int(self.retry_input.text(), 3)
+            self.config["max_concurrent_downloads"] = self.concurrent_spinbox.value()
             self.config["enable_metadata_embedding"] = self.metadata_check.isChecked()
             self.config["metadata_template"] = self.template_combo.currentText()
             self.config["enable_musicbrainz_lookup"] = self.musicbrainz_check.isChecked()

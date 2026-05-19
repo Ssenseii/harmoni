@@ -1,7 +1,9 @@
-"""Download worker thread for GUI."""
+"""Download worker thread for GUI with concurrent thread pool."""
 
 import os
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 from PySide6.QtCore import QThread, Signal
@@ -11,7 +13,10 @@ from gui.workers.download_queue import DownloadQueue, DownloadStatus, QueueItem
 
 class DownloadWorker(QThread):
     """
-    Worker thread that processes downloads from the queue.
+    Worker thread that processes downloads from the queue using a thread pool.
+
+    Downloads run concurrently up to max_concurrent_downloads threads.
+    The main QThread loop submits tasks to the pool and collects results.
 
     Signals:
         track_started: Emitted when a track download begins (artist, track)
@@ -33,9 +38,15 @@ class DownloadWorker(QThread):
         self.config = config
         self._cancelled = False
         self._paused = False
+        self._lock = threading.Lock()
+
+    @property
+    def max_workers(self) -> int:
+        """Get the max concurrent downloads from config."""
+        return max(1, min(8, self.config.get("max_concurrent_downloads", 3)))
 
     def run(self):
-        """Process all pending downloads in the queue."""
+        """Process all pending downloads in the queue using a thread pool."""
         from utils.ffmpeg import configure_ffmpeg_path
 
         # Configure FFmpeg path
@@ -57,60 +68,120 @@ class DownloadWorker(QThread):
 
         self.queue.set_running(True)
 
-        while not self._cancelled:
-            # Check for pause
-            if self._paused:
-                self.msleep(100)
-                continue
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = {}
 
-            # Get next pending item
-            item = self.queue.get_next_pending()
-            if not item:
-                break
+            while not self._cancelled:
+                # Check for pause
+                if self._paused:
+                    self.msleep(100)
+                    continue
 
-            # Mark as downloading
-            self.queue.update_item_status(item.id, DownloadStatus.DOWNLOADING, progress=0)
-            self.track_started.emit(item.artist, item.track)
+                # Collect completed futures
+                done_ids = []
+                for future_id, future in futures.items():
+                    if future.done():
+                        done_ids.append(future_id)
 
-            # Download the track
-            success, file_path, error = self._download_single(item)
+                for future_id in done_ids:
+                    future = futures.pop(future_id)
+                    try:
+                        item, success, file_path, error = future.result()
+                    except Exception as e:
+                        # Unexpected exception from the pool thread
+                        item = self._get_item_by_future_id(future_id)
+                        if item:
+                            self.queue.update_item_status(
+                                item.id,
+                                DownloadStatus.FAILED,
+                                error_message=str(e)
+                            )
+                            self.track_failed.emit(item.id, str(e))
+                        fail_count += 1
+                        continue
 
+                    if self._cancelled:
+                        self.queue.update_item_status(
+                            item.id,
+                            DownloadStatus.CANCELLED,
+                            error_message="Cancelled by user"
+                        )
+                        continue
+
+                    if success:
+                        self.queue.update_item_status(
+                            item.id,
+                            DownloadStatus.COMPLETED,
+                            progress=100,
+                            file_path=file_path
+                        )
+                        self.track_completed.emit(item.id, True, file_path or "")
+                        success_count += 1
+                    else:
+                        self.queue.update_item_status(
+                            item.id,
+                            DownloadStatus.FAILED,
+                            error_message=error
+                        )
+                        self.track_failed.emit(item.id, error or "Unknown error")
+                        fail_count += 1
+
+                # Submit new tasks if pool has capacity
+                active_count = len(futures)
+                slots_available = self.max_workers - active_count
+
+                if slots_available > 0:
+                    for _ in range(slots_available):
+                        if self._cancelled or self._paused:
+                            break
+
+                        item = self.queue.get_next_pending()
+                        if not item:
+                            break
+
+                        # Mark as downloading and emit signal
+                        self.queue.update_item_status(
+                            item.id, DownloadStatus.DOWNLOADING, progress=0
+                        )
+                        self.track_started.emit(item.artist, item.track)
+
+                        # Submit to pool
+                        future = executor.submit(self._download_single, item)
+                        futures[item.id] = future
+
+                # If no active futures and no pending items, we're done
+                if not futures and not self.queue.has_pending():
+                    break
+
+                # Brief sleep to avoid busy-waiting
+                self.msleep(50)
+
+            # Handle cancellation: cancel remaining futures
             if self._cancelled:
-                self.queue.update_item_status(
-                    item.id,
-                    DownloadStatus.CANCELLED,
-                    error_message="Cancelled by user"
-                )
-                break
-
-            if success:
-                self.queue.update_item_status(
-                    item.id,
-                    DownloadStatus.COMPLETED,
-                    progress=100,
-                    file_path=file_path
-                )
-                self.track_completed.emit(item.id, True, file_path or "")
-                success_count += 1
-            else:
-                self.queue.update_item_status(
-                    item.id,
-                    DownloadStatus.FAILED,
-                    error_message=error
-                )
-                self.track_failed.emit(item.id, error or "Unknown error")
-                fail_count += 1
+                for future_id, future in futures.items():
+                    future.cancel()
+                # Wait for running futures to finish
+                for future_id, future in futures.items():
+                    if not future.cancelled():
+                        try:
+                            future.result(timeout=5)
+                        except Exception:
+                            pass
 
         self.queue.set_running(False)
         self.queue.mark_queue_completed()
         self.all_completed.emit(success_count, fail_count)
 
-    def _download_single(self, item: QueueItem) -> tuple[bool, Optional[str], Optional[str]]:
+    def _get_item_by_future_id(self, item_id: str) -> Optional[QueueItem]:
+        """Look up a queue item by its ID."""
+        return self.queue.get_item(item_id)
+
+    def _download_single(self, item: QueueItem) -> tuple:
         """
-        Download a single track.
+        Download a single track. Runs in a pool thread.
 
         Returns:
-            Tuple of (success, file_path, error_message)
+            Tuple of (item, success, file_path, error_message)
         """
         output_dir = self.config.get("output_dir", "music")
         audio_format = self.config.get("audio_format", "mp3")
@@ -127,7 +198,7 @@ class DownloadWorker(QThread):
                 base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             output_dir = os.path.join(base_dir, output_dir)
 
-        # Ensure output directory exists
+        # Ensure output directory exists (thread-safe with exist_ok)
         os.makedirs(output_dir, exist_ok=True)
 
         query = f"{item.artist} - {item.track}"
@@ -162,24 +233,24 @@ class DownloadWorker(QThread):
                 if os.path.exists(expected_path):
                     # Embed metadata if enabled
                     self._embed_metadata(expected_path, item)
-                    return True, expected_path, None
+                    return item, True, expected_path, None
 
                 # Try to find with any extension
                 for ext in [audio_format, "mp3", "m4a", "opus", "webm"]:
                     check_path = os.path.join(output_dir, f"{filename}.{ext}")
                     if os.path.exists(check_path):
                         self._embed_metadata(check_path, item)
-                        return True, check_path, None
+                        return item, True, check_path, None
 
-                return True, None, None
+                return item, True, None, None
             else:
                 error_msg = stderr.strip() if stderr else "Download failed"
-                return False, None, error_msg
+                return item, False, None, error_msg
 
         except FileNotFoundError:
-            return False, None, "yt-dlp not found. Please install yt-dlp."
+            return item, False, None, "yt-dlp not found. Please install yt-dlp."
         except Exception as e:
-            return False, None, str(e)
+            return item, False, None, str(e)
 
     def _embed_metadata(self, file_path: str, item: QueueItem):
         """Embed metadata into the downloaded file."""

@@ -28,6 +28,7 @@ DEFAULT_CONFIG = {
     "average_download_time": 20,
     "retry_attempts": 3,
     "retry_delay": 5,
+    "max_concurrent_downloads": 3,
     "auto_cleanup": False,
     "auto_backup": True,
     "max_backups": 10,
@@ -68,6 +69,7 @@ CONFIG_PROFILES = {
     "light": {
         "retry_attempts": 1,
         "retry_delay": 3,
+        "max_concurrent_downloads": 2,
         "auto_cleanup": False,
         "auto_backup": True,
         "max_backups": 5,
@@ -84,6 +86,7 @@ CONFIG_PROFILES = {
     "advanced": {
         "retry_attempts": 5,
         "retry_delay": 10,
+        "max_concurrent_downloads": 4,
         "auto_cleanup": False,
         "auto_backup": True,
         "max_backups": 20,
@@ -100,6 +103,7 @@ CONFIG_PROFILES = {
     "minimal": {
         "retry_attempts": 0,
         "retry_delay": 0,
+        "max_concurrent_downloads": 1,
         "auto_cleanup": False,
         "auto_backup": False,
         "max_backups": 0,
@@ -130,6 +134,7 @@ CONFIG_SCHEMA = {
     "average_download_time": {"type": (int, float), "required": False, "min": 1, "max": 300},
     "retry_attempts": {"type": int, "required": False, "min": 0, "max": 10},
     "retry_delay": {"type": (int, float), "required": False, "min": 0, "max": 60},
+    "max_concurrent_downloads": {"type": int, "required": False, "min": 1, "max": 8},
     "auto_cleanup": {"type": bool, "required": False},
     "auto_backup": {"type": bool, "required": False},
     "max_backups": {"type": int, "required": False, "min": 0, "max": 100},
