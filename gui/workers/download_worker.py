@@ -130,19 +130,31 @@ class DownloadWorker(QThread):
         # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
 
-        query = f"{item.artist} - {item.track}"
-        filename = query.replace("/", "-").replace("\\", "-")
+        # Determine if the track is a direct URL or a search query
+        is_direct_url = item.track.startswith(("http://", "https://"))
+
+        if is_direct_url:
+            source = item.track
+            filename = item.track.split("/")[-1].split("?")[0] or "download"
+            filename = filename.replace("/", "-").replace("\\", "-")
+        else:
+            query = f"{item.artist} - {item.track}"
+            source = f"ytsearch1:{query}"
+            filename = query.replace("/", "-").replace("\\", "-")
 
         cmd = [
             "yt-dlp",
-            f"ytsearch1:{query}",
+            source,
             "-x",
             "--audio-format", audio_format,
             "-o", os.path.join(output_dir, f"{filename}.%(ext)s"),
-            "--no-playlist",
             "--quiet",
             "--progress"
         ]
+
+        # Only add --no-playlist for search queries, not direct URLs
+        if not is_direct_url:
+            cmd.append("--no-playlist")
 
         try:
             process = subprocess.Popen(

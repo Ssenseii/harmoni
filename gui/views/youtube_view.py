@@ -1,14 +1,88 @@
 """YouTube download view."""
 
+import json
+import subprocess
+import os
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QLineEdit, QGroupBox,
     QMessageBox, QTextEdit, QScrollArea, QFrame,
-    QSpacerItem, QSizePolicy
+    QSpacerItem, QSizePolicy, QListWidget, QListWidgetItem,
+    QProgressBar
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 
 from gui.workers.download_queue import DownloadQueue
+
+
+class PlaylistFetchWorker(QThread):
+    """Worker thread to fetch YouTube playlist metadata without blocking the GUI."""
+
+    track_fetched = Signal(str, str)  # artist, track
+    finished = Signal(list)  # list of (artist, track) tuples
+    error = Signal(str)  # error message
+    progress = Signal(int)  # number of tracks fetched so far
+
+    def __init__(self, url: str, parent=None):
+        super().__init__(parent)
+        self.url = url
+
+    def run(self):
+        """Fetch playlist metadata using yt-dlp --flat-playlist."""
+        try:
+            cmd = [
+                "yt-dlp",
+                "--flat-playlist",
+                "--dump-json",
+                self.url
+            ]
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+
+            tracks = []
+            for line in process.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    title = data.get("title", "")
+                    if not title:
+                        continue
+                    artist, track = self._parse_title(title)
+                    tracks.append((artist, track))
+                    self.track_fetched.emit(artist, track)
+                    self.progress.emit(len(tracks))
+                except json.JSONDecodeError:
+                    continue
+
+            process.wait()
+            if process.returncode != 0 and not tracks:
+                stderr = process.stderr.read()
+                self.error.emit(stderr.strip() if stderr else "Failed to fetch playlist")
+                return
+
+            self.finished.emit(tracks)
+
+        except FileNotFoundError:
+            self.error.emit("yt-dlp not found. Please install yt-dlp.")
+        except Exception as e:
+            self.error.emit(str(e))
+
+    @staticmethod
+    def _parse_title(title: str) -> tuple:
+        """Parse a video title into artist and track."""
+        for sep in [" - ", " – ", " — ", " | "]:
+            if sep in title:
+                parts = title.split(sep, 1)
+                return parts[0].strip(), parts[1].strip()
+        return "Unknown Artist", title
 
 
 class YouTubeView(QWidget):
@@ -18,6 +92,8 @@ class YouTubeView(QWidget):
         super().__init__(parent)
         self.config = config
         self.queue = queue
+        self._playlist_tracks = []
+        self._playlist_worker = None
         self._setup_ui()
 
     def _setup_ui(self):
@@ -66,6 +142,57 @@ class YouTubeView(QWidget):
 
         layout.addWidget(single_group)
 
+        # Playlist group
+        playlist_group = QGroupBox("Download YouTube Playlist")
+        playlist_layout = QVBoxLayout(playlist_group)
+        playlist_layout.setSpacing(12)
+
+        playlist_label = QLabel("Paste a YouTube playlist URL to fetch all tracks")
+        playlist_label.setObjectName("muted")
+        playlist_layout.addWidget(playlist_label)
+
+        playlist_input_layout = QHBoxLayout()
+        self.playlist_url_input = QLineEdit()
+        self.playlist_url_input.setPlaceholderText("https://www.youtube.com/playlist?list=...")
+        self.playlist_url_input.returnPressed.connect(self._fetch_playlist)
+        playlist_input_layout.addWidget(self.playlist_url_input)
+
+        self.fetch_playlist_btn = QPushButton("Fetch Playlist")
+        self.fetch_playlist_btn.clicked.connect(self._fetch_playlist)
+        playlist_input_layout.addWidget(self.fetch_playlist_btn)
+        playlist_layout.addLayout(playlist_input_layout)
+
+        self.playlist_progress = QProgressBar()
+        self.playlist_progress.setTextVisible(True)
+        self.playlist_progress.setFormat("Fetching tracks... %v found")
+        self.playlist_progress.setRange(0, 0)
+        self.playlist_progress.hide()
+        playlist_layout.addWidget(self.playlist_progress)
+
+        self.playlist_list = QListWidget()
+        self.playlist_list.setMinimumHeight(120)
+        self.playlist_list.setMaximumHeight(250)
+        self.playlist_list.hide()
+        playlist_layout.addWidget(self.playlist_list)
+
+        playlist_btn_layout = QHBoxLayout()
+        playlist_btn_layout.addStretch()
+
+        self.clear_playlist_btn = QPushButton("Clear")
+        self.clear_playlist_btn.setObjectName("secondary")
+        self.clear_playlist_btn.clicked.connect(self._clear_playlist)
+        self.clear_playlist_btn.hide()
+        playlist_btn_layout.addWidget(self.clear_playlist_btn)
+
+        self.add_playlist_btn = QPushButton("Add All to Queue")
+        self.add_playlist_btn.clicked.connect(self._add_playlist_to_queue)
+        self.add_playlist_btn.hide()
+        playlist_btn_layout.addWidget(self.add_playlist_btn)
+
+        playlist_layout.addLayout(playlist_btn_layout)
+
+        layout.addWidget(playlist_group)
+
         # Batch input group
         batch_group = QGroupBox("Batch Download")
         batch_layout = QVBoxLayout(batch_group)
@@ -111,6 +238,7 @@ class YouTubeView(QWidget):
         tips_text = QLabel(
             "- For best results, use the format: Artist - Track Name\n"
             "- YouTube URLs are also supported (paste the full URL)\n"
+            "- YouTube playlist URLs are auto-detected - use the playlist section to preview tracks\n"
             "- The search will find the first matching result on YouTube\n"
             "- Check the Downloads tab to monitor progress"
         )
@@ -125,6 +253,11 @@ class YouTubeView(QWidget):
         scroll.setWidget(scroll_widget)
         main_layout.addWidget(scroll)
 
+    @staticmethod
+    def _is_playlist_url(url: str) -> bool:
+        """Check if a URL is a YouTube playlist URL."""
+        return ("youtube.com" in url or "youtu.be" in url) and "list=" in url
+
     def _parse_query(self, query: str) -> tuple:
         """
         Parse a search query into artist and track.
@@ -138,6 +271,9 @@ class YouTubeView(QWidget):
 
         # Check if it's a URL
         if query.startswith(("http://", "https://", "www.")):
+            # Detect playlist URLs and redirect user
+            if self._is_playlist_url(query):
+                return "playlist", query
             return "YouTube", query
 
         # Try to split by common separators
@@ -157,6 +293,17 @@ class YouTubeView(QWidget):
             return
 
         artist, track = self._parse_query(query)
+        if artist == "playlist":
+            QMessageBox.information(
+                self,
+                "Playlist Detected",
+                "This looks like a YouTube playlist URL.\n\n"
+                "Please use the 'Download YouTube Playlist' section below "
+                "to fetch and preview all tracks before adding them to the queue."
+            )
+            self.playlist_url_input.setText(track)
+            return
+
         if artist and track:
             self.queue.add_track(artist, track)
             self.url_input.clear()
@@ -205,3 +352,110 @@ class YouTubeView(QWidget):
     def _clear_batch(self):
         """Clear batch input."""
         self.batch_input.clear()
+
+    def _fetch_playlist(self):
+        """Fetch playlist metadata from a YouTube playlist URL."""
+        url = self.playlist_url_input.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Empty Input", "Please enter a YouTube playlist URL.")
+            return
+
+        if not self._is_playlist_url(url):
+            QMessageBox.warning(
+                self,
+                "Invalid URL",
+                "This does not appear to be a YouTube playlist URL.\n"
+                "Playlist URLs contain a 'list=' parameter."
+            )
+            return
+
+        # Reset state
+        self._playlist_tracks = []
+        self.playlist_list.clear()
+        self.playlist_list.hide()
+        self.add_playlist_btn.hide()
+        self.clear_playlist_btn.hide()
+
+        # Show progress
+        self.playlist_progress.setValue(0)
+        self.playlist_progress.show()
+        self.fetch_playlist_btn.setEnabled(False)
+        self.fetch_playlist_btn.setText("Fetching...")
+
+        # Start worker thread
+        self._playlist_worker = PlaylistFetchWorker(url)
+        self._playlist_worker.track_fetched.connect(self._on_playlist_track_fetched)
+        self._playlist_worker.progress.connect(self._on_playlist_progress)
+        self._playlist_worker.finished.connect(self._on_playlist_finished)
+        self._playlist_worker.error.connect(self._on_playlist_error)
+        self._playlist_worker.start()
+
+    def _on_playlist_track_fetched(self, artist: str, track: str):
+        """Handle a single track fetched from the playlist."""
+        item = QListWidgetItem(f"{artist} - {track}")
+        self.playlist_list.addItem(item)
+
+    def _on_playlist_progress(self, count: int):
+        """Update progress as tracks are fetched."""
+        self.playlist_progress.setValue(count)
+
+    def _on_playlist_finished(self, tracks: list):
+        """Handle playlist fetch completion."""
+        self._playlist_tracks = tracks
+        self.playlist_progress.hide()
+        self.fetch_playlist_btn.setEnabled(True)
+        self.fetch_playlist_btn.setText("Fetch Playlist")
+
+        if tracks:
+            self.playlist_list.show()
+            self.add_playlist_btn.show()
+            self.clear_playlist_btn.show()
+            self.playlist_progress.setFormat(f"{len(tracks)} tracks found")
+        else:
+            QMessageBox.warning(
+                self,
+                "No Tracks Found",
+                "No tracks were found in this playlist.\n"
+                "The playlist may be empty or private."
+            )
+
+    def _on_playlist_error(self, error_msg: str):
+        """Handle playlist fetch error."""
+        self.playlist_progress.hide()
+        self.fetch_playlist_btn.setEnabled(True)
+        self.fetch_playlist_btn.setText("Fetch Playlist")
+        QMessageBox.warning(
+            self,
+            "Playlist Error",
+            f"Failed to fetch playlist:\n\n{error_msg}"
+        )
+
+    def _add_playlist_to_queue(self):
+        """Add all fetched playlist tracks to the download queue."""
+        if not self._playlist_tracks:
+            QMessageBox.warning(self, "No Tracks", "No tracks to add. Fetch a playlist first.")
+            return
+
+        added = 0
+        for artist, track in self._playlist_tracks:
+            if artist and track:
+                self.queue.add_track(artist, track)
+                added += 1
+
+        if added > 0:
+            self._clear_playlist()
+            QMessageBox.information(
+                self,
+                "Added to Queue",
+                f"Added {added} tracks from playlist to download queue.\n\n"
+                "Go to Downloads to start downloading."
+            )
+
+    def _clear_playlist(self):
+        """Clear the playlist preview."""
+        self._playlist_tracks = []
+        self.playlist_list.clear()
+        self.playlist_list.hide()
+        self.add_playlist_btn.hide()
+        self.clear_playlist_btn.hide()
+        self.playlist_url_input.clear()
