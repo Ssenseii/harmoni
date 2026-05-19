@@ -28,6 +28,8 @@ class QueueItem:
     progress: int = 0  # 0-100
     error_message: Optional[str] = None
     file_path: Optional[str] = None
+    retry_count: int = 0
+    max_retries: int = 3
 
 
 class DownloadQueue(QObject):

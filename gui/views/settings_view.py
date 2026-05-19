@@ -244,6 +244,14 @@ class SettingsView(QWidget):
         self.retry_input.setMaximumWidth(200)
         download_layout.addWidget(self.retry_input)
 
+        timeout_label = QLabel("Download timeout (seconds)")
+        timeout_label.setObjectName("muted")
+        download_layout.addWidget(timeout_label)
+        self.timeout_input = QLineEdit()
+        self.timeout_input.setPlaceholderText("300")
+        self.timeout_input.setMaximumWidth(200)
+        download_layout.addWidget(self.timeout_input)
+
         layout.addWidget(download_group)
 
         # Metadata Settings Group
@@ -313,6 +321,7 @@ class SettingsView(QWidget):
         self.redirect_uri_input.setText(self.config.get("spotify_redirect_uri", "http://127.0.0.1:8888/callback"))
         self.sleep_input.setText(str(self.config.get("sleep_between", 5)))
         self.retry_input.setText(str(self.config.get("retry_attempts", 3)))
+        self.timeout_input.setText(str(self.config.get("download_timeout", 300)))
         self.metadata_check.setChecked(self.config.get("enable_metadata_embedding", True))
         self.template_combo.setCurrentText(self.config.get("metadata_template", "basic"))
         self.musicbrainz_check.setChecked(self.config.get("enable_musicbrainz_lookup", True))
@@ -586,6 +595,7 @@ class SettingsView(QWidget):
             self.config["spotify_client_id"] = self.client_id_input.text().strip()
             self.config["sleep_between"] = self._safe_int(self.sleep_input.text(), 5)
             self.config["retry_attempts"] = self._safe_int(self.retry_input.text(), 3)
+            self.config["download_timeout"] = self._safe_int(self.timeout_input.text(), 300)
             self.config["enable_metadata_embedding"] = self.metadata_check.isChecked()
             self.config["metadata_template"] = self.template_combo.currentText()
             self.config["enable_musicbrainz_lookup"] = self.musicbrainz_check.isChecked()

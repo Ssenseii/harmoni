@@ -1,7 +1,9 @@
 """Download worker thread for GUI."""
 
+import glob as globmod
 import os
 import subprocess
+import time
 from typing import Optional
 
 from PySide6.QtCore import QThread, Signal
@@ -55,7 +57,13 @@ class DownloadWorker(QThread):
         success_count = 0
         fail_count = 0
 
+        max_retries = self.config.get("retry_attempts", 3)
+        retry_delay = self.config.get("retry_delay", 5)
+        sleep_between = self.config.get("sleep_between", 5)
+
         self.queue.set_running(True)
+
+        first_track = True
 
         while not self._cancelled:
             # Check for pause
@@ -68,12 +76,59 @@ class DownloadWorker(QThread):
             if not item:
                 break
 
+            # Set max_retries from config on the item
+            item.max_retries = max_retries
+
+            # Sleep between different tracks (not the first one)
+            if not first_track and sleep_between > 0:
+                if not self._interruptible_sleep(sleep_between):
+                    break
+            first_track = False
+
             # Mark as downloading
             self.queue.update_item_status(item.id, DownloadStatus.DOWNLOADING, progress=0)
             self.track_started.emit(item.artist, item.track)
 
-            # Download the track
-            success, file_path, error = self._download_single(item)
+            # Download with retry loop
+            last_error = None
+            succeeded = False
+
+            for attempt in range(max_retries + 1):
+                if self._cancelled:
+                    break
+
+                # Wait before retry (not before first attempt)
+                if attempt > 0:
+                    delay = min(retry_delay * (2 ** (attempt - 1)), 60)
+                    item.retry_count = attempt
+                    retry_msg = f"Retry {attempt}/{max_retries}: {last_error}"
+                    self.queue.update_item_status(
+                        item.id,
+                        DownloadStatus.DOWNLOADING,
+                        progress=0,
+                        error_message=retry_msg
+                    )
+                    if not self._interruptible_sleep(delay):
+                        break
+
+                if self._cancelled:
+                    break
+
+                success, file_path, error = self._download_single(item)
+
+                if success:
+                    succeeded = True
+                    self.queue.update_item_status(
+                        item.id,
+                        DownloadStatus.COMPLETED,
+                        progress=100,
+                        file_path=file_path
+                    )
+                    self.track_completed.emit(item.id, True, file_path or "")
+                    success_count += 1
+                    break
+                else:
+                    last_error = error
 
             if self._cancelled:
                 self.queue.update_item_status(
@@ -83,27 +138,38 @@ class DownloadWorker(QThread):
                 )
                 break
 
-            if success:
-                self.queue.update_item_status(
-                    item.id,
-                    DownloadStatus.COMPLETED,
-                    progress=100,
-                    file_path=file_path
-                )
-                self.track_completed.emit(item.id, True, file_path or "")
-                success_count += 1
-            else:
+            if not succeeded:
+                if max_retries > 0:
+                    final_msg = f"Failed after {max_retries + 1} attempts: {last_error}"
+                else:
+                    final_msg = last_error or "Unknown error"
                 self.queue.update_item_status(
                     item.id,
                     DownloadStatus.FAILED,
-                    error_message=error
+                    error_message=final_msg
                 )
-                self.track_failed.emit(item.id, error or "Unknown error")
+                self.track_failed.emit(item.id, final_msg)
                 fail_count += 1
 
         self.queue.set_running(False)
         self.queue.mark_queue_completed()
         self.all_completed.emit(success_count, fail_count)
+
+    def _interruptible_sleep(self, seconds: float) -> bool:
+        """
+        Sleep for the given duration, checking for cancel/pause.
+
+        Returns False if cancelled (caller should break), True otherwise.
+        """
+        end_time = time.monotonic() + seconds
+        while time.monotonic() < end_time:
+            if self._cancelled:
+                return False
+            if self._paused:
+                self.msleep(100)
+                continue
+            self.msleep(100)
+        return True
 
     def _download_single(self, item: QueueItem) -> tuple[bool, Optional[str], Optional[str]]:
         """
@@ -114,6 +180,7 @@ class DownloadWorker(QThread):
         """
         output_dir = self.config.get("output_dir", "music")
         audio_format = self.config.get("audio_format", "mp3")
+        timeout = self.config.get("download_timeout", 300)
 
         # Handle relative paths - make absolute from project root
         if not os.path.isabs(output_dir):
@@ -153,8 +220,15 @@ class DownloadWorker(QThread):
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
             )
 
-            # Wait for completion
-            stdout, stderr = process.communicate()
+            try:
+                # Wait for completion with timeout
+                stdout, stderr = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                # Clean up partial files
+                self._cleanup_partial_files(output_dir, filename)
+                return False, None, f"Download timed out after {timeout}s"
 
             if process.returncode == 0:
                 # Try to find the downloaded file
@@ -180,6 +254,20 @@ class DownloadWorker(QThread):
             return False, None, "yt-dlp not found. Please install yt-dlp."
         except Exception as e:
             return False, None, str(e)
+
+    def _cleanup_partial_files(self, output_dir: str, filename: str):
+        """Remove partial download files after a timeout or failure."""
+        try:
+            pattern = os.path.join(output_dir, f"{filename}.*")
+            for f in globmod.glob(pattern):
+                # Also match .part files left by yt-dlp
+                os.remove(f)
+            # yt-dlp sometimes uses .part suffix
+            part_pattern = os.path.join(output_dir, f"{filename}.*.part")
+            for f in globmod.glob(part_pattern):
+                os.remove(f)
+        except OSError:
+            pass
 
     def _embed_metadata(self, file_path: str, item: QueueItem):
         """Embed metadata into the downloaded file."""
