@@ -127,6 +127,12 @@ class DownloadWorker(QThread):
                 base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             output_dir = os.path.join(base_dir, output_dir)
 
+        # Create per-playlist subfolder if track has a playlist name
+        if item.playlist:
+            sanitized = item.playlist.replace("/", "-").replace("\\", "-").strip()
+            if sanitized:
+                output_dir = os.path.join(output_dir, sanitized)
+
         # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
 
@@ -191,16 +197,19 @@ class DownloadWorker(QThread):
 
             track_data = {
                 "artist": item.artist,
-                "track": item.track
+                "track": item.track,
+                "album": item.album or "",
+                "album_art_url": item.album_art_url or "",
             }
-            template = self.config.get("metadata_template", "basic")
+            template = self.config.get("metadata_template", "comprehensive")
             enable_musicbrainz = self.config.get("enable_musicbrainz_lookup", True)
 
             embed_track_metadata(
                 file_path,
                 track_data,
                 template=template,
-                allow_musicbrainz=enable_musicbrainz
+                allow_musicbrainz=enable_musicbrainz,
+                config=self.config,
             )
         except ImportError:
             pass

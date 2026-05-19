@@ -23,6 +23,8 @@ class QueueItem:
     id: str
     artist: str
     track: str
+    album: Optional[str] = None
+    album_art_url: Optional[str] = None
     playlist: Optional[str] = None
     status: DownloadStatus = DownloadStatus.PENDING
     progress: int = 0  # 0-100
@@ -94,12 +96,15 @@ class DownloadQueue(QObject):
         """Check if downloads are paused."""
         return self._is_paused
 
-    def add_track(self, artist: str, track: str, playlist: Optional[str] = None) -> QueueItem:
+    def add_track(self, artist: str, track: str, playlist: Optional[str] = None,
+                  album: Optional[str] = None, album_art_url: Optional[str] = None) -> QueueItem:
         """Add a single track to the queue."""
         item = QueueItem(
             id=str(uuid.uuid4()),
             artist=artist,
             track=track,
+            album=album,
+            album_art_url=album_art_url,
             playlist=playlist,
             status=DownloadStatus.PENDING,
             progress=0
@@ -109,9 +114,11 @@ class DownloadQueue(QObject):
         self.queue_updated.emit(self.pending_count)
         return item
 
-    def add_item(self, artist: str, track: str, album: str = "", playlist: str = "") -> QueueItem:
+    def add_item(self, artist: str, track: str, album: str = "", playlist: str = "",
+                 album_art_url: str = "") -> QueueItem:
         """Add a single item to the queue (alias for add_track with album support)."""
-        return self.add_track(artist, track, playlist or None)
+        return self.add_track(artist, track, playlist or None,
+                              album=album or None, album_art_url=album_art_url or None)
 
     def add_tracks(self, tracks: list, playlist: Optional[str] = None) -> List[QueueItem]:
         """
@@ -129,7 +136,12 @@ class DownloadQueue(QObject):
             artist = track.get("artist", "").strip()
             track_name = track.get("track", "").strip()
             if artist and track_name:
-                item = self.add_track(artist, track_name, playlist)
+                item = self.add_track(
+                    artist, track_name,
+                    playlist=track.get("playlist") or playlist,
+                    album=track.get("album"),
+                    album_art_url=track.get("album_art_url"),
+                )
                 items.append(item)
         return items
 

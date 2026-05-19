@@ -559,5 +559,6 @@ class WelcomeView(QWidget):
                 artist=track_data['artist'],
                 track=track_data['track'],
                 album=track_data.get('album', ''),
-                playlist=track_data.get('playlist', '')
+                playlist=track_data.get('playlist', ''),
+                album_art_url=track_data.get('album_art_url', ''),
             )
