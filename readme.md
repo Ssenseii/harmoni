@@ -1,6 +1,6 @@
 
 ![HARMONI Main Window](gui/resources/icons/app/app_icon.ico)
-# HARMONI
+# HARMONyyyy this is a test commit pr 
 
 A Python tool for downloading music from Spotify and YouTube using **yt-dlp**. Available as a standalone executable, desktop GUI application, or command-line interface.
 
