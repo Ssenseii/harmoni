@@ -28,6 +28,8 @@ class QueueItem:
     progress: int = 0  # 0-100
     error_message: Optional[str] = None
     file_path: Optional[str] = None
+    speed: str = ""  # live download speed text, e.g. "512KiB/s"
+    eta: str = ""  # live estimated time remaining, e.g. "00:07"
 
 
 class DownloadQueue(QObject):

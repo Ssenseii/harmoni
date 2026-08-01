@@ -24,6 +24,9 @@ DEFAULT_CONFIG = {
 
     "output_dir": "music",
     "audio_format": "mp3",
+    "download_speed_limit_mbps": 0,  # 0 = unlimited (Mbps, megabits/sec)
+    "concurrent_downloads": 3,  # how many downloads run in parallel (1-8)
+    "skip_existing_files": True,  # skip tracks already present in output_dir
     "sleep_between": 5,
     "average_download_time": 20,
     "retry_attempts": 3,
@@ -128,6 +131,9 @@ CONFIG_SCHEMA = {
         "required": True,
         "choices": ["mp3", "wav", "flac", "aac", "ogg", "m4a"],
     },
+    "download_speed_limit_mbps": {"type": (int, float), "required": False, "min": 0, "max": 1000},
+    "concurrent_downloads": {"type": int, "required": False, "min": 1, "max": 8},
+    "skip_existing_files": {"type": bool, "required": False},
     "sleep_between": {"type": (int, float), "required": True, "min": 0, "max": 60},
     "average_download_time": {"type": (int, float), "required": False, "min": 1, "max": 300},
     "retry_attempts": {"type": int, "required": False, "min": 0, "max": 10},
