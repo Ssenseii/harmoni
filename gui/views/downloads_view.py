@@ -1,16 +1,27 @@
 """Downloads view showing the download queue and progress."""
 
+import time
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTableWidget, QTableWidgetItem,
     QHeaderView, QProgressBar, QMessageBox,
-    QAbstractItemView, QFrame, QSpacerItem, QSizePolicy
+    QAbstractItemView, QFrame, QSpacerItem, QSizePolicy,
+    QSlider
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 
+from config import save_config
 from gui.workers.download_queue import DownloadQueue, DownloadStatus
 from gui.workers.download_worker import DownloadWorker
+
+# Downloads-view speed slider range (Mbps); 0 = unlimited.
+SPEED_LIMIT_MAX_MBPS = 100
+
+# Parallel-downloads slider range (must match the worker's 1-8 clamp).
+PARALLEL_MIN = 1
+PARALLEL_MAX = 8
 
 
 class StatCard(QFrame):
@@ -53,6 +64,7 @@ class DownloadsView(QWidget):
         self.config = config
         self.queue = queue
         self.worker = None
+        self._download_start_time = None  # monotonic time when a run began (for ETA)
         self._setup_ui()
         self._connect_signals()
 
@@ -133,12 +145,80 @@ class DownloadsView(QWidget):
         self.clear_done_btn.clicked.connect(self._clear_completed)
         controls_layout.addWidget(self.clear_done_btn)
 
+        self.open_folder_btn = QPushButton("Open Folder")
+        self.open_folder_btn.setObjectName("secondary")
+        self.open_folder_btn.clicked.connect(self._open_output_folder)
+        controls_layout.addWidget(self.open_folder_btn)
+
         self.clear_all_btn = QPushButton("Clear All")
         self.clear_all_btn.setObjectName("danger")
         self.clear_all_btn.clicked.connect(self._clear_all)
         controls_layout.addWidget(self.clear_all_btn)
 
         layout.addWidget(controls)
+
+        # Speed limit bar
+        speed_frame = QFrame()
+        speed_frame.setObjectName("card")
+        speed_layout = QHBoxLayout(speed_frame)
+        speed_layout.setContentsMargins(16, 12, 16, 12)
+        speed_layout.setSpacing(12)
+
+        speed_title = QLabel("Speed Limit")
+        speed_title.setStyleSheet("font-weight: 600; background: transparent;")
+        speed_layout.addWidget(speed_title)
+
+        self.speed_slider = QSlider(Qt.Horizontal)
+        self.speed_slider.setMinimum(0)
+        self.speed_slider.setMaximum(SPEED_LIMIT_MAX_MBPS)
+        self.speed_slider.setValue(self._current_speed_limit())
+        self.speed_slider.setTickPosition(QSlider.TicksBelow)
+        self.speed_slider.setTickInterval(10)
+        self.speed_slider.valueChanged.connect(self._on_speed_changed)
+        self.speed_slider.sliderReleased.connect(self._save_speed_limit)
+        speed_layout.addWidget(self.speed_slider, 1)
+
+        self.speed_value_label = QLabel()
+        self.speed_value_label.setMinimumWidth(90)
+        self.speed_value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.speed_value_label.setStyleSheet("font-weight: 600; color: #3c92de; background: transparent;")
+        speed_layout.addWidget(self.speed_value_label)
+
+        self._update_speed_label(self.speed_slider.value())
+
+        layout.addWidget(speed_frame)
+
+        # Parallel downloads bar
+        parallel_frame = QFrame()
+        parallel_frame.setObjectName("card")
+        parallel_layout = QHBoxLayout(parallel_frame)
+        parallel_layout.setContentsMargins(16, 12, 16, 12)
+        parallel_layout.setSpacing(12)
+
+        parallel_title = QLabel("Parallel Downloads")
+        parallel_title.setStyleSheet("font-weight: 600; background: transparent;")
+        parallel_layout.addWidget(parallel_title)
+
+        self.parallel_slider = QSlider(Qt.Horizontal)
+        self.parallel_slider.setMinimum(PARALLEL_MIN)
+        self.parallel_slider.setMaximum(PARALLEL_MAX)
+        self.parallel_slider.setValue(self._current_parallel())
+        self.parallel_slider.setTickPosition(QSlider.TicksBelow)
+        self.parallel_slider.setTickInterval(1)
+        self.parallel_slider.setPageStep(1)
+        self.parallel_slider.valueChanged.connect(self._on_parallel_changed)
+        self.parallel_slider.sliderReleased.connect(self._save_parallel)
+        parallel_layout.addWidget(self.parallel_slider, 1)
+
+        self.parallel_value_label = QLabel()
+        self.parallel_value_label.setMinimumWidth(90)
+        self.parallel_value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.parallel_value_label.setStyleSheet("font-weight: 600; color: #3c92de; background: transparent;")
+        parallel_layout.addWidget(self.parallel_value_label)
+
+        self._update_parallel_label(self.parallel_slider.value())
+
+        layout.addWidget(parallel_frame)
 
         # Queue table
         self.table = QTableWidget()
@@ -183,7 +263,69 @@ class DownloadsView(QWidget):
         self.progress_text.setStyleSheet("font-weight: 600; color: #3c92de; background: transparent;")
         progress_layout.addWidget(self.progress_text)
 
+        self.overall_eta_label = QLabel("")
+        self.overall_eta_label.setMinimumWidth(110)
+        self.overall_eta_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.overall_eta_label.setStyleSheet("color: #9a9ab0; background: transparent;")
+        progress_layout.addWidget(self.overall_eta_label)
+
         layout.addWidget(progress_frame)
+
+    def _current_speed_limit(self) -> int:
+        """Read the saved speed limit (Mbps) clamped to the slider range."""
+        try:
+            value = int(round(float(self.config.get("download_speed_limit_mbps", 0) or 0)))
+        except (TypeError, ValueError):
+            value = 0
+        return max(0, min(value, SPEED_LIMIT_MAX_MBPS))
+
+    def _update_speed_label(self, value: int):
+        """Update the text next to the speed slider."""
+        if value <= 0:
+            self.speed_value_label.setText("Unlimited")
+        else:
+            self.speed_value_label.setText(f"{value} Mbps")
+
+    def _on_speed_changed(self, value: int):
+        """Live-apply the slider value to the shared config (no disk write yet)."""
+        self._update_speed_label(value)
+        # Same dict the worker reads at download time, so it takes effect
+        # for downloads that start after this change.
+        self.config["download_speed_limit_mbps"] = value
+
+    def _save_speed_limit(self):
+        """Persist the speed limit to disk when the user releases the slider."""
+        self.config["download_speed_limit_mbps"] = self.speed_slider.value()
+        try:
+            save_config(self.config)
+        except Exception:
+            pass  # non-fatal; the in-memory value still applies this session
+
+    def _current_parallel(self) -> int:
+        """Read the saved parallel-download count clamped to the slider range."""
+        try:
+            value = int(self.config.get("concurrent_downloads", 3))
+        except (TypeError, ValueError):
+            value = 3
+        return max(PARALLEL_MIN, min(value, PARALLEL_MAX))
+
+    def _update_parallel_label(self, value: int):
+        """Update the text next to the parallel-downloads slider."""
+        suffix = "download" if value == 1 else "downloads"
+        self.parallel_value_label.setText(f"{value} {suffix}")
+
+    def _on_parallel_changed(self, value: int):
+        """Live-apply the parallel count to the shared config (no disk write yet)."""
+        self._update_parallel_label(value)
+        self.config["concurrent_downloads"] = value
+
+    def _save_parallel(self):
+        """Persist the parallel-download count when the user releases the slider."""
+        self.config["concurrent_downloads"] = self.parallel_slider.value()
+        try:
+            save_config(self.config)
+        except Exception:
+            pass  # non-fatal; the in-memory value still applies this session
 
     def _connect_signals(self):
         self.queue.item_added.connect(self._on_item_added)
@@ -210,8 +352,9 @@ class DownloadsView(QWidget):
         progress.setMinimum(0)
         progress.setMaximum(100)
         progress.setValue(item.progress)
-        progress.setTextVisible(False)
-        progress.setFixedHeight(6)
+        progress.setFormat("%p%")
+        progress.setTextVisible(True)
+        progress.setFixedHeight(16)
         self.table.setCellWidget(row, 4, progress)
 
         self._update_stats(self.queue.pending_count)
@@ -220,7 +363,15 @@ class DownloadsView(QWidget):
         for row in range(self.table.rowCount()):
             if self.table.item(row, 0).data(Qt.UserRole) == item.id:
                 status_item = self.table.item(row, 3)
-                status_item.setText(item.status.value.title())
+                if item.status == DownloadStatus.DOWNLOADING:
+                    parts = [f"Downloading {item.progress}%"]
+                    if getattr(item, "speed", ""):
+                        parts.append(item.speed)
+                    if getattr(item, "eta", ""):
+                        parts.append(f"ETA {item.eta}")
+                    status_item.setText("  •  ".join(parts))
+                else:
+                    status_item.setText(item.status.value.title())
 
                 if item.status == DownloadStatus.COMPLETED:
                     status_item.setForeground(QColor("#4caf50"))
@@ -260,12 +411,80 @@ class DownloadsView(QWidget):
         percent = int((completed / total) * 100)
         self.overall_progress.setValue(percent)
         self.progress_text.setText(f"{percent}%")
+        self._update_overall_eta(total, completed)
+
+    def _update_overall_eta(self, total: int, completed: int):
+        """Show a rough estimate of the time remaining for the whole queue."""
+        remaining = total - completed
+        # Only show an estimate while a run is actually in progress.
+        if remaining <= 0 or self._download_start_time is None or not self.queue.is_running:
+            self.overall_eta_label.setText("")
+            return
+
+        workers = max(1, self._current_parallel())
+        if completed > 0:
+            # Measured wall-clock average per finished item already reflects
+            # how many downloads run in parallel.
+            elapsed = time.monotonic() - self._download_start_time
+            avg = elapsed / completed
+        else:
+            # Nothing finished yet: fall back to the configured rough estimate.
+            try:
+                avg_download = float(self.config.get("average_download_time", 20) or 20)
+            except (TypeError, ValueError):
+                avg_download = 20.0
+            avg = avg_download / workers
+
+        eta_seconds = avg * remaining
+        self.overall_eta_label.setText(f"~ {self._format_duration(eta_seconds)} left")
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        seconds = int(max(0, seconds))
+        if seconds >= 3600:
+            return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
+        if seconds >= 60:
+            return f"{seconds // 60}m {seconds % 60:02d}s"
+        return f"{seconds}s"
+
+    def _resolve_output_dir(self) -> str:
+        """Resolve the configured output dir to an absolute path (project-root relative)."""
+        import os
+        import sys
+        output_dir = self.config.get("output_dir", "music")
+        if not os.path.isabs(output_dir):
+            if getattr(sys, "frozen", False):
+                base_dir = os.path.dirname(sys.executable)
+            else:
+                # …/gui/views/downloads_view.py -> project root
+                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            output_dir = os.path.join(base_dir, output_dir)
+        return output_dir
+
+    def _open_output_folder(self):
+        """Open the downloads folder in the OS file manager."""
+        import os
+        import sys
+        import subprocess
+
+        path = self._resolve_output_dir()
+        try:
+            os.makedirs(path, exist_ok=True)
+            if sys.platform == "win32":
+                os.startfile(path)  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception as e:
+            QMessageBox.warning(self, "Open Folder", f"Could not open folder:\n{path}\n\n{e}")
 
     def _on_queue_completed(self, success: int, failed: int):
         self.start_btn.setEnabled(True)
         self.pause_btn.setEnabled(False)
         self.cancel_btn.setEnabled(False)
         self.pause_btn.setText("Pause")
+        self.overall_eta_label.setText("")
 
         if failed > 0:
             QMessageBox.information(
@@ -285,6 +504,7 @@ class DownloadsView(QWidget):
             QMessageBox.information(self, "No Downloads", "No tracks in queue to download.")
             return
 
+        self._download_start_time = time.monotonic()
         self.worker = DownloadWorker(self.queue, self.config)
         self.worker.all_completed.connect(self._on_queue_completed)
         self.worker.start()

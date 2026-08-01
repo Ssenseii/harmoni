@@ -228,6 +228,12 @@ class SettingsView(QWidget):
         download_layout = QVBoxLayout(download_group)
         download_layout.setSpacing(10)
 
+        self.skip_existing_check = QCheckBox("Skip tracks already downloaded")
+        download_layout.addWidget(self.skip_existing_check)
+
+        self.cleanup_check = QCheckBox("Clean up temporary files after downloads")
+        download_layout.addWidget(self.cleanup_check)
+
         sleep_label = QLabel("Sleep between downloads (seconds)")
         sleep_label.setObjectName("muted")
         download_layout.addWidget(sleep_label)
@@ -325,6 +331,8 @@ class SettingsView(QWidget):
         self.format_combo.setCurrentText(self.config.get("audio_format", "mp3"))
         self.client_id_input.setText(self.config.get("spotify_client_id", ""))
         self.redirect_uri_input.setText(self.config.get("spotify_redirect_uri", "http://127.0.0.1:8888/callback"))
+        self.skip_existing_check.setChecked(self.config.get("skip_existing_files", True))
+        self.cleanup_check.setChecked(self.config.get("auto_cleanup", False))
         self.sleep_input.setText(str(self.config.get("sleep_between", 5)))
         self.retry_input.setText(str(self.config.get("retry_attempts", 3)))
         self.ytdlp_args_input.setText(self.config.get("ytdlp_extra_args", ""))
@@ -600,6 +608,8 @@ class SettingsView(QWidget):
             self.config["output_dir"] = output_dir
             self.config["audio_format"] = self.format_combo.currentText()
             self.config["spotify_client_id"] = self.client_id_input.text().strip()
+            self.config["skip_existing_files"] = self.skip_existing_check.isChecked()
+            self.config["auto_cleanup"] = self.cleanup_check.isChecked()
             self.config["sleep_between"] = self._safe_int(self.sleep_input.text(), 5)
             self.config["retry_attempts"] = self._safe_int(self.retry_input.text(), 3)
             self.config["ytdlp_extra_args"] = self.ytdlp_args_input.text().strip()
