@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Album search in the Spotify tab**: Search the Spotify catalog for albums and load or download them like playlists. Results are queued as `Artist - Album`. Playlist search is left out because Spotify returns 403 for the tracks of playlists the user doesn't own or collaborate on.
+
 ## [1.3.0] - 2026-11-05
 
 ### Added

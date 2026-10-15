@@ -18,6 +18,7 @@ class SpotifyWorker(QThread):
         playlists_loaded: Emitted when playlists are loaded
         tracks_loaded: Emitted when tracks are loaded
         liked_songs_loaded: Emitted when liked songs are loaded
+        albums_found: Emitted with album search results
         error: Emitted on error
         progress: Emitted during long operations
     """
@@ -26,6 +27,7 @@ class SpotifyWorker(QThread):
     tracks_loaded = Signal(str, list)  # playlist_id, list of track dicts
     tracks_batch = Signal(str, list)  # playlist_id, batch of tracks (streaming)
     liked_songs_loaded = Signal(list)  # List of track dicts
+    albums_found = Signal(list)  # List of album dicts (see SpotifyDataLoader.search_albums)
     error = Signal(str)  # Error message
     error_status = Signal(int, str)  # HTTP status (0 network, -1 unknown), error message
     progress = Signal(str, int, int)  # message, current, total
@@ -62,6 +64,18 @@ class SpotifyWorker(QThread):
         self._task_args = {}
         self.start()
 
+    def search_albums(self, query: str):
+        """Queue task to search the Spotify catalog for albums."""
+        self._task = "search_albums"
+        self._task_args = {"query": query}
+        self.start()
+
+    def fetch_album_tracks(self, album: dict):
+        """Queue task to fetch tracks from an album (a search_albums result)."""
+        self._task = "album_tracks"
+        self._task_args = {"album": album}
+        self.start()
+
     def run(self):
         """Execute the queued task."""
         self._cancelled = False
@@ -85,6 +99,10 @@ class SpotifyWorker(QThread):
                 self._fetch_playlist_tracks(loader)
             elif self._task == "liked_songs":
                 self._fetch_liked_songs(loader)
+            elif self._task == "search_albums":
+                self._search_albums(loader)
+            elif self._task == "album_tracks":
+                self._fetch_album_tracks(loader)
 
         except Exception as e:
             if not self._cancelled:
@@ -165,6 +183,34 @@ class SpotifyWorker(QThread):
         )
         if not self._cancelled:
             self.liked_songs_loaded.emit(tracks)
+
+    def _search_albums(self, loader: SpotifyDataLoader):
+        """Search the catalog for albums.
+
+        @param loader: Loader bound to the session client.
+        """
+        query = self._task_args.get("query", "")
+        self.progress.emit(f"Searching albums for \"{query}\"...", 0, 0)
+        albums = loader.search_albums(query)
+        if not self._cancelled:
+            self.albums_found.emit(albums)
+
+    def _fetch_album_tracks(self, loader: SpotifyDataLoader):
+        """Fetch tracks from an album, reusing the playlist track signals.
+
+        @param loader: Loader bound to the session client.
+        """
+        album = self._task_args.get("album") or {}
+        album_id = album.get("id")
+        album_name = album.get("name", "")
+        self.progress.emit(f"Fetching tracks from {album_name}...", 0, 0)
+        tracks = loader.load_album_tracks(
+            album,
+            on_batch=self._batch_emitter(f"tracks from {album_name}", album_id),
+            should_cancel=self._is_cancelled,
+        )
+        if not self._cancelled:
+            self.tracks_loaded.emit(album_id, tracks)
 
     def cancel(self):
         """Cancel the current operation."""

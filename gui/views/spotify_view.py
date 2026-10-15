@@ -80,6 +80,7 @@ class SpotifyView(QWidget):
         self.is_connected = False
         self.current_tracks = []
         self._tracks_cache = {}
+        self._user_playlists = []
         self._updating_checks = False
         self._setup_ui()
         self._check_connection()
@@ -125,9 +126,25 @@ class SpotifyView(QWidget):
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 10, 0)
 
-        playlists_label = QLabel("Playlists")
-        playlists_label.setObjectName("section")
-        left_layout.addWidget(playlists_label)
+        self.playlists_label = QLabel("Playlists")
+        self.playlists_label.setObjectName("section")
+        left_layout.addWidget(self.playlists_label)
+
+        # Album search
+        search_row = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search albums...")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.returnPressed.connect(self._search_albums)
+        self.search_input.setEnabled(False)
+        search_row.addWidget(self.search_input, 1)
+
+        self.search_btn = QPushButton("Search")
+        self.search_btn.setObjectName("secondary")
+        self.search_btn.clicked.connect(self._search_albums)
+        self.search_btn.setEnabled(False)
+        search_row.addWidget(self.search_btn)
+        left_layout.addLayout(search_row)
 
         link_row = QHBoxLayout()
         self.link_input = QLineEdit()
@@ -153,6 +170,12 @@ class SpotifyView(QWidget):
         self.liked_btn.clicked.connect(self._fetch_liked_songs)
         self.liked_btn.setEnabled(False)
         btn_row.addWidget(self.liked_btn)
+
+        self.my_playlists_btn = QPushButton("My Playlists")
+        self.my_playlists_btn.setObjectName("secondary")
+        self.my_playlists_btn.clicked.connect(self._show_user_playlists)
+        self.my_playlists_btn.hide()
+        btn_row.addWidget(self.my_playlists_btn)
 
         btn_row.addStretch()
         left_layout.addLayout(btn_row)
@@ -278,6 +301,8 @@ class SpotifyView(QWidget):
             self.disconnect_btn.setEnabled(True)
             self.refresh_btn.setEnabled(True)
             self.liked_btn.setEnabled(True)
+            self.search_input.setEnabled(True)
+            self.search_btn.setEnabled(True)
             self.connection_changed.emit(True)
             # Auto-refresh playlists
             self._refresh_playlists()
@@ -288,6 +313,9 @@ class SpotifyView(QWidget):
             self.disconnect_btn.setEnabled(False)
             self.refresh_btn.setEnabled(False)
             self.liked_btn.setEnabled(False)
+            self.search_input.setEnabled(False)
+            self.search_btn.setEnabled(False)
+            self.my_playlists_btn.hide()
             self.connection_changed.emit(False)
 
     def _show_oauth_dialog(self):
@@ -329,7 +357,10 @@ class SpotifyView(QWidget):
         self._stop_worker()
         self._tracks_cache.clear()
         self.current_tracks = []
+        self._user_playlists = []
+        self.search_input.clear()
         self.playlist_list.clear()
+        self.playlists_label.setText("Playlists")
         self.tracks_table.setRowCount(0)
         self._set_connected(False)
 
@@ -387,6 +418,44 @@ class SpotifyView(QWidget):
     def _on_playlists_loaded(self, playlists: list):
         self.progress_bar.hide()
         self.refresh_btn.setEnabled(True)
+        self._user_playlists = playlists
+        self._show_user_playlists()
+
+    def _show_user_playlists(self):
+        self.playlists_label.setText("Playlists")
+        self.my_playlists_btn.hide()
+        self._populate_playlist_list(self._user_playlists)
+
+    def _search_albums(self):
+        query = self.search_input.text().strip()
+        if not query:
+            self._show_user_playlists()
+            return
+        self._stop_worker()
+        self.worker = self._new_worker()
+        self.worker.albums_found.connect(self._on_albums_found)
+        self.worker.error_status.connect(self._on_error)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.search_albums(query)
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.show()
+        self.search_btn.setEnabled(False)
+
+    def _on_albums_found(self, albums: list):
+        self.progress_bar.hide()
+        self.search_btn.setEnabled(True)
+        self.playlists_label.setText(f"Albums ({len(albums)} results)")
+        self.my_playlists_btn.show()
+        self._populate_playlist_list(albums)
+
+    def _fetch_tracks_for(self, playlist: dict):
+        """Start the worker fetch for a playlist or album list entry."""
+        if playlist.get("kind") == "album":
+            self.worker.fetch_album_tracks(playlist)
+        else:
+            self.worker.fetch_playlist_tracks(playlist["id"], playlist["name"])
+
+    def _populate_playlist_list(self, playlists: list):
         self.playlist_list.clear()
         for playlist in playlists:
             count = playlist.get("tracks_total") or 0
@@ -475,7 +544,7 @@ class SpotifyView(QWidget):
         self.worker.tracks_loaded.connect(self._on_download_tracks_loaded)
         self.worker.error_status.connect(self._on_error)
         self.worker.progress.connect(self._on_progress)
-        self.worker.fetch_playlist_tracks(playlist["id"], playlist["name"])
+        self._fetch_tracks_for(playlist)
         self.progress_bar.setRange(0, 0)
         self.progress_bar.show()
 
@@ -608,7 +677,7 @@ class SpotifyView(QWidget):
         self.worker.tracks_loaded.connect(self._on_tracks_loaded)
         self.worker.error_status.connect(self._on_error)
         self.worker.progress.connect(self._on_progress)
-        self.worker.fetch_playlist_tracks(pid, playlist["name"])
+        self._fetch_tracks_for(playlist)
         self.progress_bar.setRange(0, 0)
         self.progress_bar.show()
         self.current_tracks = []
@@ -884,6 +953,7 @@ class SpotifyView(QWidget):
         self.progress_bar.hide()
         self.refresh_btn.setEnabled(True)
         self.liked_btn.setEnabled(True)
+        self.search_btn.setEnabled(True)
         action, title, text = spotify_error_feedback(status, message)
         if self._download_fetch_worker is not None:
             self._download_fetch_worker = None
