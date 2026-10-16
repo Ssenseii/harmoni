@@ -102,7 +102,8 @@ def normalize_track_metadata(track: Dict[str, Any]) -> Dict[str, Any]:
       - from Exportify: Artist Name(s), Track Name, Album Name, Release Date, Genres, Record Label, Tempo, Key, Energy, etc.
 
     Returns keys:
-      artist, title, album, date, genre, bpm, comment, uri, extra
+      artist, title, album, albumartist, tracknumber, discnumber,
+      date, genre, bpm, comment, uri, extra
     """
     # Handle both JSON format (artist, track) and CSV format (Artist Name(s), Track Name)
     artist_raw = _as_str(
@@ -121,6 +122,13 @@ def normalize_track_metadata(track: Dict[str, Any]) -> Dict[str, Any]:
         track.get("Album Name")
     )
     uri = _as_str(track.get("uri") or track.get("Track URI"))
+
+    # Release position (from the Spotify loaders; Exportify CSVs don't carry it).
+    albumartist = _as_str(track.get("album_artist") or track.get("albumartist"))
+    tracknumber = _as_str(track.get("track_number"))
+    if tracknumber and _as_str(track.get("total_tracks")):
+        tracknumber = f"{tracknumber}/{_as_str(track.get('total_tracks'))}"
+    discnumber = _as_str(track.get("disc_number"))
 
     # Normalize multi-artist entries (convert semicolons to commas for search-friendly format)
     artist = artist_raw
@@ -162,6 +170,9 @@ def normalize_track_metadata(track: Dict[str, Any]) -> Dict[str, Any]:
         "artist": artist,
         "title": title,
         "album": album,
+        "albumartist": albumartist,
+        "tracknumber": tracknumber,
+        "discnumber": discnumber,
         "date": date,
         "genre": genre,
         "bpm": bpm_str,
@@ -255,6 +266,12 @@ def apply_template(metadata: Dict[str, Any], template_name: Optional[str]) -> Di
 
     for key in ["album", "date", "genre", "bpm", "comment"]:
         if fields.get(key) and _as_str(metadata.get(key)):
+            out[key] = _as_str(metadata.get(key))
+
+    # Release identity tags are written whenever known, regardless of template:
+    # without them taggers like beets can't group tracks into one release.
+    for key in ["albumartist", "tracknumber", "discnumber"]:
+        if _as_str(metadata.get(key)):
             out[key] = _as_str(metadata.get(key))
 
     # pass-through for cover art decisions and provenance
@@ -572,6 +589,15 @@ def _set_tags_generic(mut: Any, tags: Dict[str, str]) -> None:
                 pass
 
 
+def _parse_position(value: str) -> Optional[Tuple[int, int]]:
+    """Parse "3" or "3/12" into an MP4 (number, total) tuple; total 0 = unknown."""
+    num, _, total = (value or "").partition("/")
+    try:
+        return int(num), int(total or 0)
+    except ValueError:
+        return None
+
+
 def _embed_mp3(path: str, tags: Dict[str, str], cover_bytes: Optional[bytes], cover_mime: Optional[str]) -> None:
     # Ensure ID3 header exists
     try:
@@ -591,6 +617,9 @@ def _embed_mp3(path: str, tags: Dict[str, str], cover_bytes: Optional[bytes], co
         audio["title"] = tags["title"]
     if tags.get("album"):
         audio["album"] = tags["album"]
+    for key in ("albumartist", "tracknumber", "discnumber"):
+        if tags.get(key):
+            audio[key] = tags[key]
     if tags.get("date"):
         audio["date"] = tags["date"]
     if tags.get("genre"):
@@ -632,6 +661,9 @@ def _embed_flac(path: str, tags: Dict[str, str], cover_bytes: Optional[bytes], c
             "artist": tags.get("artist", ""),
             "title": tags.get("title", ""),
             "album": tags.get("album", ""),
+            "albumartist": tags.get("albumartist", ""),
+            "tracknumber": tags.get("tracknumber", ""),
+            "discnumber": tags.get("discnumber", ""),
             "date": tags.get("date", ""),
             "genre": tags.get("genre", ""),
             "bpm": tags.get("bpm", ""),
@@ -661,6 +693,9 @@ def _embed_vorbis(path: str, tags: Dict[str, str], cover_bytes: Optional[bytes],
             "artist": tags.get("artist", ""),
             "title": tags.get("title", ""),
             "album": tags.get("album", ""),
+            "albumartist": tags.get("albumartist", ""),
+            "tracknumber": tags.get("tracknumber", ""),
+            "discnumber": tags.get("discnumber", ""),
             "date": tags.get("date", ""),
             "genre": tags.get("genre", ""),
             "bpm": tags.get("bpm", ""),
@@ -678,6 +713,9 @@ def _embed_opus(path: str, tags: Dict[str, str], cover_bytes: Optional[bytes], _
             "artist": tags.get("artist", ""),
             "title": tags.get("title", ""),
             "album": tags.get("album", ""),
+            "albumartist": tags.get("albumartist", ""),
+            "tracknumber": tags.get("tracknumber", ""),
+            "discnumber": tags.get("discnumber", ""),
             "date": tags.get("date", ""),
             "genre": tags.get("genre", ""),
             "bpm": tags.get("bpm", ""),
@@ -695,6 +733,12 @@ def _embed_m4a(path: str, tags: Dict[str, str], cover_bytes: Optional[bytes], co
         audio["\xa9nam"] = [tags["title"]]
     if tags.get("album"):
         audio["\xa9alb"] = [tags["album"]]
+    if tags.get("albumartist"):
+        audio["aART"] = [tags["albumartist"]]
+    for key, atom in (("tracknumber", "trkn"), ("discnumber", "disk")):
+        pos = _parse_position(tags.get(key, ""))
+        if pos:
+            audio[atom] = [pos]
     if tags.get("date"):
         audio["\xa9day"] = [tags["date"]]
     if tags.get("genre"):
@@ -724,6 +768,9 @@ def _embed_aac(path: str, tags: Dict[str, str], _cover_bytes: Optional[bytes], _
             "artist": tags.get("artist", ""),
             "title": tags.get("title", ""),
             "album": tags.get("album", ""),
+            "albumartist": tags.get("albumartist", ""),
+            "tracknumber": tags.get("tracknumber", ""),
+            "discnumber": tags.get("discnumber", ""),
             "date": tags.get("date", ""),
             "genre": tags.get("genre", ""),
             "comment": tags.get("comment", ""),
@@ -758,6 +805,9 @@ def _embed_wav(path: str, tags: Dict[str, str], cover_bytes: Optional[bytes], co
                 easy["title"] = tags["title"]
             if tags.get("album"):
                 easy["album"] = tags["album"]
+            for key in ("albumartist", "tracknumber", "discnumber"):
+                if tags.get(key):
+                    easy[key] = tags[key]
             if tags.get("date"):
                 easy["date"] = tags["date"]
             if tags.get("genre"):
@@ -851,6 +901,9 @@ def embed_track_metadata(
         "artist": _as_str(meta.get("artist")),
         "title": _as_str(meta.get("title")),
         "album": _as_str(meta.get("album")),
+        "albumartist": _as_str(meta.get("albumartist")),
+        "tracknumber": _as_str(meta.get("tracknumber")),
+        "discnumber": _as_str(meta.get("discnumber")),
         "date": _as_str(meta.get("date")),
         "genre": _as_str(meta.get("genre")),
         "bpm": _as_str(meta.get("bpm")),

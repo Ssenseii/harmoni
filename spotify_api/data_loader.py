@@ -245,6 +245,8 @@ class SpotifyDataLoader:
             "name": album.get("title") or album.get("name"),
             "release_date": album.get("release_date"),
             "images": [{"url": album["image_url"]}] if album.get("image_url") else album.get("images"),
+            "artists": album.get("artists") if isinstance(album.get("artists"), list) else [{"name": album.get("artist")}],
+            "total_tracks": album.get("tracks_total") or album.get("total_tracks"),
         }
 
         def convert(item: Any) -> Optional[Dict[str, Any]]:
@@ -360,6 +362,8 @@ class SpotifyDataLoader:
         album = track_obj.get("album") or {}
         album_name = album.get("name") if isinstance(album, dict) else None
         release_date = album.get("release_date") if isinstance(album, dict) else None
+        album_artist = cls._normalize_artist_list(album.get("artists")) if isinstance(album, dict) else ""
+        total_tracks = album.get("total_tracks") if isinstance(album, dict) else None
         
         # Extract album artwork URL (largest available image)
         album_art_url = None
@@ -376,6 +380,10 @@ class SpotifyDataLoader:
             "artist": artist_name or "",
             "track": (track_obj.get("name") or ""),
             "album": album_name or "",
+            "album_artist": album_artist,
+            "track_number": track_obj.get("track_number"),
+            "disc_number": track_obj.get("disc_number"),
+            "total_tracks": total_tracks,
             "album_art_url": album_art_url,
             "uri": uri,
             "spotify_id": spotify_id,
