@@ -125,7 +125,7 @@ class DownloadsView(QWidget):
         controls_layout.addWidget(self.cancel_btn)
 
         self.waiting_label = QLabel()
-        self.waiting_label.setObjectName("muted")
+        self.waiting_label.setObjectName("accent")
         self.waiting_label.hide()
         controls_layout.addWidget(self.waiting_label)
 

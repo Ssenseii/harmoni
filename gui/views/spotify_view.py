@@ -74,6 +74,7 @@ class SpotifyView(QWidget):
         self._download_fetch_worker = None
         self._download_queue_playlists = []
         self._loading_playlist_id = None
+        self.is_connected = False
         self.current_tracks = []
         self._tracks_cache = {}
         self._updating_checks = False
@@ -255,6 +256,7 @@ class SpotifyView(QWidget):
         self._set_connected(False)
 
     def _set_connected(self, connected: bool):
+        self.is_connected = connected
         if connected:
             self.status_label.setText("Connected")
             self.status_label.setStyleSheet("color: #1db954;")

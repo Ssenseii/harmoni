@@ -114,9 +114,15 @@ def build_search_command(track: dict, output_dir: str, audio_format: str, config
     return cmd
 
 
+SIGN_IN_HINT = "Add --cookies-from-browser chrome (or firefox, edge) to Extra yt-dlp arguments in Settings."
+NO_RESULTS_MESSAGE = (
+    "YouTube returned no search results. Explicit or age-restricted tracks only show up when signed in. " + SIGN_IN_HINT
+)
+
 _ERROR_PATTERNS = (
     (("http error 429", "too many requests"), "YouTube is rate limiting requests (HTTP 429). Wait a while and retry."),
-    (("sign in to confirm",), "YouTube asked to sign in to confirm you are not a bot. Add cookies through ytdlp_extra_args."),
+    (("confirm your age",), "This track is age-restricted on YouTube and needs sign-in. " + SIGN_IN_HINT),
+    (("sign in to confirm",), "YouTube asked to sign in to confirm you are not a bot. " + SIGN_IN_HINT),
     (("ffmpeg not found", "ffprobe and ffmpeg not found", "ffmpeg is not installed"), "FFmpeg not found. Install FFmpeg or set its path in settings."),
     (("does not pass filter",), "No search result matched the track length."),
     (("no video results", "no results"), "No YouTube results for this track."),
@@ -248,4 +254,6 @@ def run_download(
     if any("does not pass filter" in line.lower() for line in lines):
         tolerance = _duration_tolerance(config)
         return DownloadResult(False, None, f"No search result within {tolerance:g}s of the track length.")
+    if not any(line.startswith("[youtube] ") and "Extracting URL" not in line for line in lines):
+        return DownloadResult(False, None, describe_ytdlp_error(lines, NO_RESULTS_MESSAGE))
     return DownloadResult(False, None, describe_ytdlp_error(lines, "yt-dlp finished but no audio file was found."))

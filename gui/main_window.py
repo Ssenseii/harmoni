@@ -382,7 +382,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(actions)
 
         actions_label = QLabel("QUICK ACTIONS")
-        actions_label.setObjectName("sidebarSection")
+        actions_label.setObjectName("sectionSmall")
         actions.addWidget(actions_label)
 
         self.quick_start_btn = QPushButton("Start Downloads")
@@ -493,6 +493,7 @@ class MainWindow(QMainWindow):
 
         # Spotify connection status
         self.spotify_view.connection_changed.connect(self._update_spotify_status)
+        self._update_spotify_status(self.spotify_view.is_connected)
         self.spotify_view.navigate_to.connect(self._navigate_to_view)
         self.youtube_view.navigate_to.connect(self._navigate_to_view)
 

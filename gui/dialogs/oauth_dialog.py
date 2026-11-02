@@ -45,7 +45,7 @@ class SpotifySetupDialog(QDialog):
         layout.setSpacing(14)
 
         title = QLabel("Create your own Spotify app")
-        title.setObjectName("title")
+        title.setObjectName("section")
         layout.addWidget(title)
         intro = QLabel(
             "Spotify only lets HARMONI read your playlists through an app you own. "
@@ -79,7 +79,7 @@ class SpotifySetupDialog(QDialog):
         self._add_step(layout, 6, "Paste the Client ID into HARMONI's Settings, click Save, then come back here and click Connect.")
 
         note = QLabel("The Spotify account that owns the app needs Premium. Spotify requires it for apps in Development Mode.")
-        note.setObjectName("muted")
+        note.setObjectName("subtitle")
         note.setWordWrap(True)
         layout.addWidget(note)
 

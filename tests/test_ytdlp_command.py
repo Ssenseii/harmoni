@@ -163,10 +163,24 @@ class TestRunDownload(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("track length", result.error)
 
+    def test_empty_search_explains_sign_in(self):
+        output = "[youtube:search] Extracting URL: ytsearch5:Artist A - Song One\n"
+        with mock.patch("subprocess.Popen", return_value=_fake_proc(0, output)):
+            result = run_download(self.track, self.out, "mp3", {})
+        self.assertEqual(result.error, ytdlp_command.NO_RESULTS_MESSAGE)
+        self.assertIn("--cookies-from-browser", result.error)
+
+    def test_found_video_without_file_keeps_generic_error(self):
+        output = "[youtube] abcdefghijk: Downloading webpage\n"
+        with mock.patch("subprocess.Popen", return_value=_fake_proc(0, output)):
+            result = run_download(self.track, self.out, "mp3", {})
+        self.assertIn("no audio file was found", result.error)
+
     def test_stderr_is_mapped_to_short_errors(self):
         cases = {
             "ERROR: [youtube] abc: HTTP Error 429: Too Many Requests": "429",
-            "ERROR: [youtube] abc: Sign in to confirm you're not a bot": "sign in",
+            "ERROR: [youtube] abc: Sign in to confirm you're not a bot": "not a bot",
+            "ERROR: [youtube] abc: Sign in to confirm your age.": "age-restricted",
             "ERROR: Postprocessing: ffprobe and ffmpeg not found. Please install": "FFmpeg not found",
             "ERROR: something unusual happened": "ERROR: something unusual happened",
         }

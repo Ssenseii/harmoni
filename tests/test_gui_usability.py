@@ -171,5 +171,20 @@ class TestSidebarQuickActions(unittest.TestCase):
         self.assertIs(self.window.view_stack.currentWidget(), self.window.settings_view)
 
 
+class TestStatusBar(unittest.TestCase):
+    def test_matches_spotify_connected_at_startup(self):
+        from gui.main_window import MainWindow
+        from spotify_api.token_manager import TokenInfo
+
+        token = TokenInfo(access_token="AT", token_type="Bearer", expires_at=9999999999.0)
+        with mock.patch("gui.main_window.AppUpdateCheckWorker.start"), \
+             mock.patch("gui.views.spotify_view.SpotifyPKCEAuth.load_cached_token", return_value=token), \
+             mock.patch("gui.views.spotify_view.SpotifyWorker"):
+            window = MainWindow(dict(DEFAULT_CONFIG))
+        self.addCleanup(window.deleteLater)
+        self.assertTrue(window.spotify_view.is_connected)
+        self.assertEqual(window.spotify_status_label.text(), "Spotify: Connected")
+
+
 if __name__ == "__main__":
     unittest.main()

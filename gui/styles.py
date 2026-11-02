@@ -87,12 +87,9 @@ QWidget#sidebarPanel {{
     border-right: 1px solid {COLORS["border"]};
 }}
 
-QLabel#sidebarSection {{
-    color: {COLORS["text_muted"]};
-    font-size: 11px;
-    font-weight: 600;
-    padding: 4px 2px;
-    background: transparent;
+QListWidget::item:selected {{
+    background-color: {COLORS["accent_muted"]};
+    color: {COLORS["text"]};
 }}
 
 QListWidget#sidebar {{
