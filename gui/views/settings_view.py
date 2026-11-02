@@ -8,10 +8,11 @@ from PySide6.QtWidgets import (
     QSpacerItem, QSizePolicy, QScrollArea, QFrame,
     QProgressBar
 )
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, QTimer
 
 from config import save_config, validate_config, DEFAULT_CONFIG, load_config
 from gui.styles import COLORS
+from gui.workers.ytdlp_update_worker import YtdlpStatusWorker
 from utils.ffmpeg import check_ffmpeg_available
 from tools.ytdlp_update_checker import check_ytdlp_updates
 
@@ -26,10 +27,12 @@ class SettingsView(QWidget):
         self.config = config
         self.ffmpeg_worker = None
         self.ytdlp_worker = None
+        self.ytdlp_status_worker = None
         self._setup_ui()
         self._load_values()
         self._check_ffmpeg_status()
-        self._check_ytdlp_status()
+        # Start the yt-dlp probe after construction so the window can show first.
+        QTimer.singleShot(0, self._check_ytdlp_status)
 
     def _setup_ui(self):
         """Set up the settings UI."""
@@ -412,41 +415,19 @@ class SettingsView(QWidget):
         self.ffmpeg_worker = None
 
     def _check_ytdlp_status(self):
-        """Check yt-dlp installation and version status."""
-        import shutil
-        import subprocess
+        """Start a background check of the yt-dlp installation and version."""
+        if self.ytdlp_status_worker is not None and self.ytdlp_status_worker.isRunning():
+            return
+        self.ytdlp_status_worker = YtdlpStatusWorker(self.config.get("ytdlp_path", ""), self)
+        self.ytdlp_status_worker.status_ready.connect(self._apply_ytdlp_status)
+        self.ytdlp_status_worker.start()
 
-        version = None
-        found_path = None
+    def _apply_ytdlp_status(self, found_path: str, version: str):
+        """Show the yt-dlp status found by the background check.
 
-        # Check custom path from config first
-        custom_path = self.config.get("ytdlp_path", "")
-        if custom_path and os.path.isfile(custom_path):
-            found_path = custom_path
-            try:
-                result = subprocess.run(
-                    [custom_path, "--version"],
-                    capture_output=True, text=True, timeout=3
-                )
-                if result.returncode == 0:
-                    version = result.stdout.strip()
-            except Exception:
-                pass
-        else:
-            # Check PATH
-            ytdlp_bin = shutil.which("yt-dlp")
-            if ytdlp_bin:
-                found_path = ytdlp_bin
-                try:
-                    result = subprocess.run(
-                        [ytdlp_bin, "--version"],
-                        capture_output=True, text=True, timeout=3
-                    )
-                    if result.returncode == 0:
-                        version = result.stdout.strip()
-                except Exception:
-                    pass
-
+        @param found_path: Path of the yt-dlp binary, or an empty string when none was found.
+        @param version: Reported yt-dlp version, or an empty string when unknown.
+        """
         if found_path and version:
             self.ytdlp_status_icon.setStyleSheet("color: #4caf50; font-size: 14px;")
             self.ytdlp_status_label.setText(f"Installed: {version} ({found_path})")
@@ -677,6 +658,7 @@ class SettingsView(QWidget):
         )
         if reply == QMessageBox.Yes:
             for key, value in DEFAULT_CONFIG.items():
-                self.config[key] = value
+                if not key.startswith("spotify_"):
+                    self.config[key] = value
             self._load_values()
             QMessageBox.information(self, "Reset", "Settings reset to defaults.")

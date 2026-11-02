@@ -15,6 +15,7 @@ from gui.views.downloads_view import DownloadsView
 from gui.views.settings_view import SettingsView
 from gui.workers.download_queue import DownloadQueue
 from gui.workers.app_update_worker import AppUpdateCheckWorker
+from gui.workers.ytdlp_update_worker import YtdlpUpdateCheckWorker
 from version import __version__
 
 
@@ -258,11 +259,19 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.update_banner_label)
         layout.addStretch()
 
-        download_btn = QPushButton("Download")
-        download_btn.setObjectName("ghost")
-        download_btn.setStyleSheet("color: white; border-color: white;")
-        download_btn.clicked.connect(self._open_update_release_page)
-        layout.addWidget(download_btn)
+        self.app_download_btn = QPushButton("Download")
+        self.app_download_btn.setObjectName("ghost")
+        self.app_download_btn.setStyleSheet("color: white; border-color: white;")
+        self.app_download_btn.clicked.connect(self._open_update_release_page)
+        self.app_download_btn.setVisible(False)
+        layout.addWidget(self.app_download_btn)
+
+        self.ytdlp_install_btn = QPushButton("Install yt-dlp update")
+        self.ytdlp_install_btn.setObjectName("ghost")
+        self.ytdlp_install_btn.setStyleSheet("color: white; border-color: white;")
+        self.ytdlp_install_btn.clicked.connect(self._install_ytdlp_update)
+        self.ytdlp_install_btn.setVisible(False)
+        layout.addWidget(self.ytdlp_install_btn)
 
         dismiss_btn = QPushButton("Dismiss")
         dismiss_btn.setObjectName("ghost")
@@ -271,6 +280,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(dismiss_btn)
 
         self._update_release_url = None
+        self._app_update_text = ""
+        self._ytdlp_update_text = ""
         return banner
 
     def _check_for_app_update(self):
@@ -279,14 +290,44 @@ class MainWindow(QMainWindow):
         self.app_update_worker.update_available.connect(self._on_app_update_available)
         self.app_update_worker.start()
 
+    def start_ytdlp_update_check(self):
+        """Start a background check for a newer yt-dlp, shown in the update banner."""
+        self.ytdlp_update_worker = YtdlpUpdateCheckWorker(self.config.get("ytdlp_path"), self)
+        self.ytdlp_update_worker.update_available.connect(self._on_ytdlp_update_available)
+        self.ytdlp_update_worker.start()
+
     def _on_app_update_available(self, info: dict):
         """Show the update banner when a newer release is found."""
         self._update_release_url = info.get("release_url")
-        self.update_banner_label.setText(
+        self._app_update_text = (
             f"HARMONI {info.get('latest_version')} is available "
             f"(you're on {info.get('current_version')})."
         )
-        self.update_banner.setVisible(True)
+        self.app_download_btn.setVisible(True)
+        self._refresh_update_banner()
+
+    def _on_ytdlp_update_available(self, info: dict):
+        """Show the update banner with an install choice when a newer yt-dlp is found.
+
+        @param info: Result dict from check_ytdlp_updates with current_version and latest_version.
+        """
+        self._ytdlp_update_text = (
+            f"yt-dlp {info.get('latest_version')} is available "
+            f"(you're on {info.get('current_version')})."
+        )
+        self.ytdlp_install_btn.setVisible(True)
+        self._refresh_update_banner()
+
+    def _refresh_update_banner(self):
+        """Show the banner with every pending update message."""
+        text = " ".join(t for t in (self._app_update_text, self._ytdlp_update_text) if t)
+        self.update_banner_label.setText(text)
+        self.update_banner.setVisible(bool(text))
+
+    def _install_ytdlp_update(self):
+        """Open Settings and offer to install the yt-dlp update."""
+        self._navigate_to_view("settings")
+        self.settings_view._check_ytdlp_updates()
 
     def _open_update_release_page(self):
         """Open the GitHub release page for the available update."""
@@ -383,6 +424,7 @@ class MainWindow(QMainWindow):
 
         # Spotify connection status
         self.spotify_view.connection_changed.connect(self._update_spotify_status)
+        self.spotify_view.navigate_to.connect(self._navigate_to_view)
 
         # Welcome view navigation
         self.welcome_view.navigate_to.connect(self._navigate_to_view)

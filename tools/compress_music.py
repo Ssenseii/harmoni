@@ -3,6 +3,7 @@ import subprocess
 import questionary
 from constants import VALID_AUDIO_EXTENSIONS, AUDIO_BITRATE_OPTIONS
 from utils.logger import log_info, log_success, log_error
+from utils.system import hidden_subprocess_kwargs
 
 def compress_music(config):
     """
@@ -47,7 +48,13 @@ def compress_music(config):
                     ]
 
                     try:
-                        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                        subprocess.run(
+                            cmd,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            check=True,
+                            **hidden_subprocess_kwargs(),
+                        )
                         log_success(f"Compressed: {file}")
                         compressed_files.append(output_path)
                     except Exception as e:

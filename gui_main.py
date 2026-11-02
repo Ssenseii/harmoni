@@ -197,25 +197,6 @@ def main():
         )
         sys.exit(1)
 
-    # Check for yt-dlp updates
-    try:
-        from tools.ytdlp_update_checker import check_ytdlp_updates
-        update_info = check_ytdlp_updates(config.get("ytdlp_path"))
-        if update_info and update_info.get('update_available'):
-            message = (
-                f"yt-dlp Update Available\n\n"
-                f"Current version: {update_info['current_version']}\n"
-                f"Latest version: {update_info['latest_version']}\n\n"
-                f"Go to Settings > Check for Updates to install it."
-            )
-            QMessageBox.information(
-                None,
-                "Update Available",
-                message
-            )
-    except Exception:
-        pass  # Silently ignore update check failures
-
     # Apply stylesheet
     from gui.styles import get_stylesheet
     app.setStyleSheet(get_stylesheet())
@@ -233,6 +214,7 @@ def main():
         window.setWindowIcon(app_icon)
 
     window.show()
+    window.start_ytdlp_update_check()
 
     # Run event loop
     sys.exit(app.exec())

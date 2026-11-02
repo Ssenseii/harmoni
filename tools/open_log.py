@@ -2,6 +2,7 @@ import subprocess
 import platform
 import os
 from constants import LOG_FILE
+from utils.system import hidden_subprocess_kwargs
 
 def open_log():
     """
@@ -16,8 +17,8 @@ def open_log():
         if system == "Windows":
             os.startfile(LOG_FILE)
         elif system == "Darwin":  # macOS
-            subprocess.run(["open", LOG_FILE])
+            subprocess.run(["open", LOG_FILE], **hidden_subprocess_kwargs())
         else:  # Linux and others
-            subprocess.run(["xdg-open", LOG_FILE])
+            subprocess.run(["xdg-open", LOG_FILE], **hidden_subprocess_kwargs())
     except Exception as e:
         print(f"Failed to open log file: {e}")
