@@ -197,7 +197,8 @@ def main():
         )
         sys.exit(1)
 
-    # Apply stylesheet
+    # The native windows11 style paints its own accent bar on every selected cell under the stylesheet.
+    app.setStyle("Fusion")
     from gui.styles import get_stylesheet
     app.setStyleSheet(get_stylesheet())
 

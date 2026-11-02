@@ -2,7 +2,7 @@
 
 import os
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTableWidget, QTableWidgetItem,
     QHeaderView, QListWidget, QListWidgetItem,
     QSplitter, QProgressBar, QMessageBox,
@@ -14,7 +14,7 @@ from PySide6.QtGui import QAction, QColor
 from gui.styles import COLORS
 from gui.workers.download_queue import DownloadQueue
 from gui.workers.spotify_worker import SpotifyWorker
-from gui.dialogs import oauth_dialog
+from gui.dialogs import oauth_dialog, queued_notice
 from gui.dialogs.oauth_dialog import FunctionThread, SpotifyOAuthDialog
 from spotify_api.auth import SpotifyPKCEAuth, check_spotify_credentials
 from spotify_api.client import NETWORK_ERROR_STATUS, SessionTokenManager, SpotifyClient
@@ -73,6 +73,7 @@ class SpotifyView(QWidget):
         self._retired_workers = []
         self._download_fetch_worker = None
         self._download_queue_playlists = []
+        self._loading_playlist_id = None
         self.current_tracks = []
         self._tracks_cache = {}
         self._updating_checks = False
@@ -144,6 +145,7 @@ class SpotifyView(QWidget):
         # Playlist list
         self.playlist_list = QListWidget()
         self.playlist_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.playlist_list.itemClicked.connect(self._on_playlist_clicked)
         self.playlist_list.itemDoubleClicked.connect(self._on_playlist_selected)
         self.playlist_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.playlist_list.customContextMenuRequested.connect(self._show_playlist_context_menu)
@@ -275,7 +277,7 @@ class SpotifyView(QWidget):
     def _show_oauth_dialog(self):
         creds = check_spotify_credentials(self.config)
         if not creds.get("ok"):
-            if oauth_dialog.prompt_spotify_setup(self, creds.get("message") or ""):
+            if oauth_dialog.prompt_spotify_setup(self, creds.get("redirect_uri")):
                 self._open_settings()
             return
         dialog = SpotifyOAuthDialog(self.config, self)
@@ -285,8 +287,8 @@ class SpotifyView(QWidget):
         dialog.exec()
 
     def _open_settings(self):
-        """Ask the main window to switch to the Settings view."""
-        self.navigate_to.emit("settings")
+        """Ask the main window to open Settings at the Spotify Client ID field."""
+        self.navigate_to.emit("spotify_settings")
 
     def _on_auth_completed(self, success: bool, message: str):
         if success:
@@ -459,13 +461,15 @@ class SpotifyView(QWidget):
             messages.append(msg)
         if skipped:
             messages.append(f"Skipped {skipped} playlist(s).\n{NOT_FETCHABLE_TOOLTIP}")
-        if messages:
+        if queued_count > 0 and not self._download_queue_playlists:
+            self._notify_queued("\n\n".join(messages))
+        elif messages:
             title = "Added to Queue" if queued_count > 0 else "Playlists Skipped"
             QMessageBox.information(self, title, "\n\n".join(messages))
 
     def _fetch_and_queue_next(self):
         if not self._download_queue_playlists:
-            QMessageBox.information(self, "Done", "All selected playlists have been queued for download.")
+            self._notify_queued("All selected playlists are in the download queue.")
             return
         self._stop_worker()
         playlist = self._download_queue_playlists.pop(0)
@@ -503,8 +507,7 @@ class SpotifyView(QWidget):
         if pid in self._tracks_cache:
             tracks = self._tracks_cache[pid]
             self.queue.add_tracks(tracks, playlist=name)
-            QMessageBox.information(self, "Added to Queue",
-                f"Added {len(tracks)} tracks from \"{name}\" to download queue.")
+            self._notify_queued(f"Added {len(tracks)} tracks from \"{name}\" to the download queue.")
         else:
             self._stop_worker()
             self._download_queue_playlists = [playlist]
@@ -520,6 +523,15 @@ class SpotifyView(QWidget):
                 item.setData(Qt.UserRole, playlist)
                 break
 
+    def _on_playlist_clicked(self, item: QListWidgetItem):
+        """Open a playlist on a plain click, leaving Ctrl and Shift clicks to multi-select.
+
+        @param item: The clicked playlist row.
+        """
+        if QApplication.keyboardModifiers() & (Qt.ControlModifier | Qt.ShiftModifier | Qt.MetaModifier):
+            return
+        self._on_playlist_selected(item)
+
     def _on_playlist_selected(self, item: QListWidgetItem):
         playlist = item.data(Qt.UserRole)
         if not playlist:
@@ -533,7 +545,10 @@ class SpotifyView(QWidget):
         if pid in self._tracks_cache:
             self._populate_tracks(self._tracks_cache[pid])
             return
+        if self.worker and self.worker.isRunning() and self._loading_playlist_id == pid:
+            return
 
+        self._loading_playlist_id = pid
         self._stop_worker()
         self.worker = self._new_worker()
         self.worker.tracks_batch.connect(self._on_tracks_batch)
@@ -787,10 +802,15 @@ class SpotifyView(QWidget):
                 playlist_name,
                 track_data=track,
             )
-            QMessageBox.information(
-                self, "Added to Queue",
-                f"Added \"{track.get('track', '')}\" by {track.get('artist', '')} to download queue.",
-            )
+            self._notify_queued(f"Added \"{track.get('track', '')}\" by {track.get('artist', '')} to the download queue.")
+
+    def _notify_queued(self, text: str):
+        """Confirm tracks were queued and open Downloads when the user asks.
+
+        @param text: What was added.
+        """
+        if queued_notice.confirm_queued(self, text):
+            self.navigate_to.emit("downloads")
 
     def _add_selected_to_queue(self):
         tracks = self._get_selected_tracks()
@@ -802,10 +822,7 @@ class SpotifyView(QWidget):
 
         # Add to queue
         self.queue.add_tracks(tracks, playlist=playlist_name)
-        QMessageBox.information(
-            self, "Added to Queue",
-            f"Added {len(tracks)} tracks to download queue.\n\nGo to Downloads to start downloading.",
-        )
+        self._notify_queued(f"Added {len(tracks)} tracks to the download queue.")
 
     def _on_progress(self, message: str, current: int, total: int):
         if total > 0:

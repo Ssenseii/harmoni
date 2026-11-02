@@ -5,8 +5,10 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QStackedWidget,
     QStatusBar, QLabel, QFrame, QPushButton
 )
-from PySide6.QtCore import Qt, QSize, QPoint
-from PySide6.QtGui import QIcon, QMouseEvent
+import os
+
+from PySide6.QtCore import Qt, QSize, QPoint, QUrl
+from PySide6.QtGui import QDesktopServices, QIcon, QMouseEvent
 
 from gui.views.welcome_view import WelcomeView
 from gui.views.spotify_view import SpotifyView
@@ -224,7 +226,7 @@ class MainWindow(QMainWindow):
 
         # Sidebar
         self.sidebar = self._create_sidebar()
-        content_layout.addWidget(self.sidebar)
+        content_layout.addWidget(self._create_sidebar_panel(self.sidebar))
 
         # Content area with stacked widget
         self.view_stack = QStackedWidget()
@@ -361,6 +363,69 @@ class MainWindow(QMainWindow):
 
         return sidebar
 
+    def _create_sidebar_panel(self, sidebar: QListWidget) -> QWidget:
+        """Put the navigation list above quick actions for the download queue.
+
+        @param sidebar: The navigation list.
+        """
+        panel = QWidget()
+        panel.setObjectName("sidebarPanel")
+        panel.setFixedWidth(180)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(sidebar, 1)
+
+        actions = QVBoxLayout()
+        actions.setContentsMargins(12, 8, 12, 16)
+        actions.setSpacing(8)
+        layout.addLayout(actions)
+
+        actions_label = QLabel("QUICK ACTIONS")
+        actions_label.setObjectName("sidebarSection")
+        actions.addWidget(actions_label)
+
+        self.quick_start_btn = QPushButton("Start Downloads")
+        self.quick_start_btn.clicked.connect(self._quick_start_downloads)
+        self.quick_retry_btn = QPushButton("Retry Failed")
+        self.quick_retry_btn.setObjectName("secondary")
+        self.quick_retry_btn.clicked.connect(self._quick_retry_failed)
+        open_folder_btn = QPushButton("Open Music Folder")
+        open_folder_btn.setObjectName("secondary")
+        open_folder_btn.clicked.connect(self._open_music_folder)
+        for btn in (self.quick_start_btn, self.quick_retry_btn, open_folder_btn):
+            btn.setCursor(Qt.PointingHandCursor)
+            actions.addWidget(btn)
+        return panel
+
+    def _refresh_quick_actions(self, *_):
+        """Show queue counts on the quick action buttons and disable the ones with nothing to do."""
+        pending = self.download_queue.pending_count
+        failed = self.download_queue.failed_count
+        running = self.downloads_view.worker is not None
+        self.quick_start_btn.setText(f"Start Downloads ({pending})" if pending else "Start Downloads")
+        self.quick_start_btn.setEnabled(bool(pending) and not running)
+        self.quick_retry_btn.setText(f"Retry Failed ({failed})" if failed else "Retry Failed")
+        self.quick_retry_btn.setEnabled(bool(failed))
+
+    def _quick_start_downloads(self):
+        """Open Downloads and start the queue."""
+        self._navigate_to_view("downloads")
+        self.downloads_view._start_downloads()
+        self._refresh_quick_actions()
+
+    def _quick_retry_failed(self):
+        """Move failed downloads back to the queue and open Downloads."""
+        self.downloads_view._retry_failed()
+        self._navigate_to_view("downloads")
+        self._refresh_quick_actions()
+
+    def _open_music_folder(self):
+        """Open the download folder in the system file manager, creating it if needed."""
+        folder = self.config.get("output_dir") or "music"
+        os.makedirs(folder, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(folder)))
+
     def _create_views(self):
         """Create and add all views to the stack."""
         # Create views
@@ -418,6 +483,10 @@ class MainWindow(QMainWindow):
 
         # Download queue updates
         self.download_queue.queue_updated.connect(self._update_download_count)
+        self.download_queue.queue_updated.connect(self._refresh_quick_actions)
+        self.download_queue.item_updated.connect(self._refresh_quick_actions)
+        self.downloads_view.running_changed.connect(self._refresh_quick_actions)
+        self._refresh_quick_actions()
 
         # Settings changes
         self.settings_view.config_saved.connect(self._on_config_saved)
@@ -425,6 +494,7 @@ class MainWindow(QMainWindow):
         # Spotify connection status
         self.spotify_view.connection_changed.connect(self._update_spotify_status)
         self.spotify_view.navigate_to.connect(self._navigate_to_view)
+        self.youtube_view.navigate_to.connect(self._navigate_to_view)
 
         # Welcome view navigation
         self.welcome_view.navigate_to.connect(self._navigate_to_view)
@@ -442,7 +512,10 @@ class MainWindow(QMainWindow):
             "downloads": 3,
             "settings": 4,
         }
-        if view_name in view_map:
+        if view_name == "spotify_settings":
+            self.sidebar.setCurrentRow(view_map["settings"])
+            self.settings_view.focus_spotify_client_id()
+        elif view_name in view_map:
             self.sidebar.setCurrentRow(view_map[view_name])
 
     def _update_download_count(self, count: int):

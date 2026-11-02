@@ -41,6 +41,7 @@ class SettingsView(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
 
         scroll = QScrollArea()
+        self._scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
 
@@ -215,10 +216,11 @@ class SettingsView(QWidget):
 
         help_label = QLabel(
             "To get a Spotify Client ID:\n"
-            "1. Go to developer.spotify.com/dashboard\n"
-            "2. Create a new app\n"
-            "3. Add http://127.0.0.1:8888/callback to Redirect URIs\n"
-            "4. Copy the Client ID here"
+            "1. Go to developer.spotify.com/dashboard and create an app (tick Web API)\n"
+            "2. Add the Redirect URI above to the app's Redirect URIs\n"
+            "3. In User Management, add the email of every Spotify account that will log in\n"
+            "4. Copy the app's Client ID here and click Save\n"
+            "The Spotify account that owns the app needs Premium."
         )
         help_label.setObjectName("subtitle")
         help_label.setWordWrap(True)
@@ -321,6 +323,11 @@ class SettingsView(QWidget):
 
         scroll.setWidget(scroll_widget)
         main_layout.addWidget(scroll)
+
+    def focus_spotify_client_id(self):
+        """Scroll to the Spotify Client ID field and put the cursor in it."""
+        self._scroll.ensureWidgetVisible(self.client_id_input)
+        self.client_id_input.setFocus()
 
     def _load_values(self):
         """Load current config values into the form."""

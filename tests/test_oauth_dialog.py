@@ -156,7 +156,7 @@ class TestDialogLifecycle(unittest.TestCase):
             dialog._start_oauth()
         browser.assert_not_called()
         prompt.assert_called_once()
-        self.assertIn("User Management", prompt.call_args[0][1])
+        self.assertEqual(prompt.call_args[0][1], config["spotify_redirect_uri"])
         self.assertEqual(requested, [True])
         self.assertIsNone(dialog.callback_thread)
         dialog.deleteLater()

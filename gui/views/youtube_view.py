@@ -6,13 +6,16 @@ from PySide6.QtWidgets import (
     QMessageBox, QTextEdit, QScrollArea, QFrame,
     QSpacerItem, QSizePolicy
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 
+from gui.dialogs.queued_notice import confirm_queued
 from gui.workers.download_queue import DownloadQueue
 
 
 class YouTubeView(QWidget):
     """View for downloading from YouTube URLs or search."""
+
+    navigate_to = Signal(str)
 
     def __init__(self, config: dict, queue: DownloadQueue, parent=None):
         super().__init__(parent)
@@ -160,12 +163,8 @@ class YouTubeView(QWidget):
         if artist and track:
             self.queue.add_track(artist, track)
             self.url_input.clear()
-            QMessageBox.information(
-                self,
-                "Added to Queue",
-                f"Added '{artist} - {track}' to download queue.\n\n"
-                "Go to Downloads to start downloading."
-            )
+            if confirm_queued(self, f"Added '{artist} - {track}' to the download queue."):
+                self.navigate_to.emit("downloads")
         else:
             QMessageBox.warning(self, "Invalid Input", "Could not parse the input.")
 
@@ -194,11 +193,11 @@ class YouTubeView(QWidget):
 
         if added > 0:
             self.batch_input.clear()
-            message = f"Added {added} tracks to download queue."
+            message = f"Added {added} tracks to the download queue."
             if skipped > 0:
                 message += f"\n{skipped} lines were skipped (empty or invalid)."
-            message += "\n\nGo to Downloads to start downloading."
-            QMessageBox.information(self, "Added to Queue", message)
+            if confirm_queued(self, message):
+                self.navigate_to.emit("downloads")
         else:
             QMessageBox.warning(self, "No Tracks Added", "No valid tracks found in the input.")
 

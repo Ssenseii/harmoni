@@ -215,7 +215,7 @@ class TestSpotifyViewErrors(unittest.TestCase):
              mock.patch.object(self.view, "_open_settings") as open_settings:
             self.view._show_oauth_dialog()
         prompt.assert_called_once()
-        self.assertIn("User Management", prompt.call_args[0][1])
+        self.assertEqual(prompt.call_args[0][1], "http://127.0.0.1:8888/callback")
         dialog_cls.assert_not_called()
         browser.assert_not_called()
         open_settings.assert_called_once()
@@ -224,7 +224,7 @@ class TestSpotifyViewErrors(unittest.TestCase):
         seen = []
         self.view.navigate_to.connect(seen.append)
         self.view._open_settings()
-        self.assertEqual(seen, ["settings"])
+        self.assertEqual(seen, ["spotify_settings"])
 
 
 class TestStartupRefreshOffUiThread(unittest.TestCase):

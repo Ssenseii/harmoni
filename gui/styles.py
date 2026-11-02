@@ -82,10 +82,22 @@ QPushButton#closeBtn:hover {{
 }}
 
 /* ===================== SIDEBAR ===================== */
+QWidget#sidebarPanel {{
+    background-color: {COLORS["sidebar"]};
+    border-right: 1px solid {COLORS["border"]};
+}}
+
+QLabel#sidebarSection {{
+    color: {COLORS["text_muted"]};
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 2px;
+    background: transparent;
+}}
+
 QListWidget#sidebar {{
     background-color: {COLORS["sidebar"]};
     border: none;
-    border-right: 1px solid {COLORS["border"]};
     padding: 8px 0;
     outline: none;
 }}

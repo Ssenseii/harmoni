@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QHeaderView, QProgressBar, QMessageBox,
     QAbstractItemView, QFrame, QSpacerItem, QSizePolicy
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 
 from gui.workers.download_queue import DownloadQueue, DownloadStatus
@@ -49,6 +49,8 @@ class StatCard(QFrame):
 
 class DownloadsView(QWidget):
     """View showing download queue and controls."""
+
+    running_changed = Signal(bool)
 
     def __init__(self, config: dict, queue: DownloadQueue, parent=None):
         super().__init__(parent)
@@ -122,6 +124,11 @@ class DownloadsView(QWidget):
         self.cancel_btn.setEnabled(False)
         controls_layout.addWidget(self.cancel_btn)
 
+        self.waiting_label = QLabel()
+        self.waiting_label.setObjectName("muted")
+        self.waiting_label.hide()
+        controls_layout.addWidget(self.waiting_label)
+
         controls_layout.addSpacerItem(QSpacerItem(40, 0, QSizePolicy.Expanding, QSizePolicy.Minimum))
 
         # Secondary actions
@@ -145,15 +152,14 @@ class DownloadsView(QWidget):
         # Queue table
         self.table = QTableWidget()
         self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["ARTIST", "TRACK", "SOURCE", "STATUS", "PROGRESS"])
+        self.table.setHorizontalHeaderLabels(["ARTIST", "TRACK", "SOURCE", "STATUS", "DETAILS"])
 
         header_view = self.table.horizontalHeader()
         header_view.setSectionResizeMode(0, QHeaderView.Stretch)
         header_view.setSectionResizeMode(1, QHeaderView.Stretch)
         header_view.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         header_view.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        header_view.setSectionResizeMode(4, QHeaderView.Fixed)
-        self.table.setColumnWidth(4, 140)
+        header_view.setSectionResizeMode(4, QHeaderView.Stretch)
 
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -227,13 +233,32 @@ class DownloadsView(QWidget):
         status_item = QTableWidgetItem(item.status.value.title())
         self.table.setItem(row, 3, status_item)
 
-        progress = QProgressBar()
-        progress.setMinimum(0)
-        progress.setMaximum(100)
+        self._set_details_cell(row, item)
+
+    def _set_details_cell(self, row: int, item):
+        """Show the failure reason for a failed item, or a progress bar otherwise.
+
+        @param row: Table row of the item.
+        @param item: QueueItem shown in that row.
+        """
+        if item.status == DownloadStatus.FAILED:
+            self.table.removeCellWidget(row, 4)
+            reason = item.error_message or "Download failed with no error message."
+            reason_item = QTableWidgetItem(reason)
+            reason_item.setToolTip(reason)
+            reason_item.setForeground(QColor("#ef5350"))
+            self.table.setItem(row, 4, reason_item)
+            return
+        progress = self.table.cellWidget(row, 4)
+        if progress is None:
+            self.table.setItem(row, 4, None)
+            progress = QProgressBar()
+            progress.setMinimum(0)
+            progress.setMaximum(100)
+            progress.setTextVisible(False)
+            progress.setFixedHeight(6)
+            self.table.setCellWidget(row, 4, progress)
         progress.setValue(item.progress)
-        progress.setTextVisible(False)
-        progress.setFixedHeight(6)
-        self.table.setCellWidget(row, 4, progress)
 
     def _on_item_updated(self, item):
         for row in range(self.table.rowCount()):
@@ -254,9 +279,7 @@ class DownloadsView(QWidget):
                 else:
                     status_item.setForeground(QColor("#9a9ab0"))
 
-                progress = self.table.cellWidget(row, 4)
-                if progress:
-                    progress.setValue(item.progress)
+                self._set_details_cell(row, item)
                 break
 
         self._update_overall_progress()
@@ -271,6 +294,17 @@ class DownloadsView(QWidget):
         self.pending_card.set_value(str(pending))
         self.completed_card.set_value(str(self.queue.completed_count))
         self.failed_card.set_value(str(self.queue.failed_count))
+        self._update_waiting_hint()
+
+    def _update_waiting_hint(self):
+        """Tell the user queued tracks wait for Start Downloads while nothing is running."""
+        pending = self.queue.pending_count
+        if pending and self.worker is None:
+            noun = "track is" if pending == 1 else "tracks are"
+            self.waiting_label.setText(f"{pending} {noun} waiting. Press Start Downloads to begin.")
+            self.waiting_label.show()
+        else:
+            self.waiting_label.hide()
 
     def _update_overall_progress(self):
         total = self.table.rowCount()
@@ -297,6 +331,8 @@ class DownloadsView(QWidget):
         self.pause_btn.setEnabled(False)
         self.cancel_btn.setEnabled(False)
         self.pause_btn.setText("Pause")
+        self._update_waiting_hint()
+        self.running_changed.emit(False)
 
     def _on_queue_completed(self, success: int, failed: int):
         if failed > 0:
@@ -325,6 +361,8 @@ class DownloadsView(QWidget):
         worker.finished.connect(lambda: self._on_worker_finished(worker))
         self.worker = worker
         worker.start()
+        self._update_waiting_hint()
+        self.running_changed.emit(True)
 
         self.start_btn.setEnabled(False)
         self.pause_btn.setEnabled(True)

@@ -8,11 +8,12 @@ import urllib.parse
 from typing import Callable, Optional
 
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QLineEdit, QProgressBar, QMessageBox,
     QGroupBox, QFormLayout
 )
-from PySide6.QtCore import Qt, Signal, QThread, QTimer
+from PySide6.QtCore import Qt, Signal, QThread, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 
 from spotify_api.auth import (
     DEFAULT_SPOTIFY_REDIRECT_URI,
@@ -25,22 +26,105 @@ from spotify_api.auth import (
 _PORT_BUSY_ERRNOS = {errno.EADDRINUSE, errno.EACCES, 10048, 10013}
 
 
-def prompt_spotify_setup(parent, message: str) -> bool:
-    """Show the Spotify app setup steps and return True when the user picks Open Settings.
+SPOTIFY_DASHBOARD_URL = "https://developer.spotify.com/dashboard"
 
-    @param parent: Widget that owns the message box.
-    @param message: Setup steps from check_spotify_credentials.
+
+class SpotifySetupDialog(QDialog):
+    """Step-by-step guide for creating the Spotify app HARMONI needs before it can connect."""
+
+    def __init__(self, redirect_uri: str, parent=None):
+        """Build the guide.
+
+        @param redirect_uri: Redirect URI the user must add to their Spotify app.
+        @param parent: Optional Qt parent.
+        """
+        super().__init__(parent)
+        self.setWindowTitle("Set Up Spotify")
+        self.setMinimumWidth(560)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+
+        title = QLabel("Create your own Spotify app")
+        title.setObjectName("title")
+        layout.addWidget(title)
+        intro = QLabel(
+            "Spotify only lets HARMONI read your playlists through an app you own. "
+            "It's free and takes about two minutes."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        dashboard_btn = QPushButton("Open Spotify Dashboard")
+        dashboard_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(SPOTIFY_DASHBOARD_URL)))
+        self._add_step(layout, 1, "Open the Spotify Developer Dashboard and log in with your Spotify account.", dashboard_btn)
+        self._add_step(layout, 2, "Click Create app. Any name and description will do. Tick Web API.")
+
+        uri_row = QHBoxLayout()
+        uri_field = QLineEdit(redirect_uri)
+        uri_field.setReadOnly(True)
+        uri_row.addWidget(uri_field)
+        copy_btn = QPushButton("Copy")
+        copy_btn.setObjectName("secondary")
+
+        def copy_uri():
+            QApplication.clipboard().setText(redirect_uri)
+            copy_btn.setText("Copied")
+
+        copy_btn.clicked.connect(copy_uri)
+        uri_row.addWidget(copy_btn)
+        self._add_step(layout, 3, "Under Redirect URIs, paste this address exactly, click Add, then Save.", uri_row)
+
+        self._add_step(layout, 4, "Open User Management in your new app and add the email of every Spotify account that will use HARMONI, including your own.")
+        self._add_step(layout, 5, "Open the app's Settings page and copy the Client ID.")
+        self._add_step(layout, 6, "Paste the Client ID into HARMONI's Settings, click Save, then come back here and click Connect.")
+
+        note = QLabel("The Spotify account that owns the app needs Premium. Spotify requires it for apps in Development Mode.")
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.setObjectName("secondary")
+        close_btn.clicked.connect(self.reject)
+        buttons.addWidget(close_btn)
+        settings_btn = QPushButton("Open HARMONI Settings")
+        settings_btn.clicked.connect(self.accept)
+        buttons.addWidget(settings_btn)
+        layout.addLayout(buttons)
+
+    @staticmethod
+    def _add_step(layout, number: int, text: str, extra=None):
+        """Add one numbered step, with an optional button or row under it.
+
+        @param layout: Layout the step is added to.
+        @param number: Step number shown to the user.
+        @param text: What the user does in this step.
+        @param extra: Optional widget or layout placed under the text.
+        """
+        label = QLabel(f"<b>{number}.</b> {escape(text)}")
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        if extra is None:
+            return
+        row = QHBoxLayout()
+        row.setContentsMargins(20, 0, 0, 0)
+        if isinstance(extra, QHBoxLayout):
+            row.addLayout(extra)
+        else:
+            row.addWidget(extra)
+            row.addStretch()
+        layout.addLayout(row)
+
+
+def prompt_spotify_setup(parent, redirect_uri: str) -> bool:
+    """Show the Spotify setup guide and return True when the user picks Open HARMONI Settings.
+
+    @param parent: Widget that owns the dialog.
+    @param redirect_uri: Redirect URI the user must add to their Spotify app.
     """
-    box = QMessageBox(parent)
-    box.setIcon(QMessageBox.Warning)
-    box.setWindowTitle("Spotify Setup Needed")
-    box.setText("Connecting to Spotify needs your own Spotify Developer app first.")
-    box.setInformativeText(message)
-    box.setTextInteractionFlags(Qt.TextSelectableByMouse)
-    settings_btn = box.addButton("Open Settings", QMessageBox.AcceptRole)
-    box.addButton(QMessageBox.Close)
-    box.exec()
-    return box.clickedButton() is settings_btn
+    return SpotifySetupDialog(redirect_uri or DEFAULT_SPOTIFY_REDIRECT_URI, parent).exec() == QDialog.Accepted
 
 
 class FunctionThread(QThread):
@@ -294,7 +378,7 @@ class SpotifyOAuthDialog(QDialog):
         """Start the OAuth flow."""
         creds = check_spotify_credentials(self.config)
         if not creds.get("ok"):
-            if prompt_spotify_setup(self, creds.get("message") or ""):
+            if prompt_spotify_setup(self, creds.get("redirect_uri")):
                 self.open_settings_requested.emit()
                 self.reject()
             return
