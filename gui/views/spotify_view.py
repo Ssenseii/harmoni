@@ -9,25 +9,70 @@ from PySide6.QtWidgets import (
     QCheckBox, QAbstractItemView, QMenu
 )
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QColor
 
+from gui.styles import COLORS
 from gui.workers.download_queue import DownloadQueue
 from gui.workers.spotify_worker import SpotifyWorker
-from gui.dialogs.oauth_dialog import SpotifyOAuthDialog
-from spotify_api.auth import SpotifyPKCEAuth
+from gui.dialogs import oauth_dialog
+from gui.dialogs.oauth_dialog import FunctionThread, SpotifyOAuthDialog
+from spotify_api.auth import SpotifyPKCEAuth, check_spotify_credentials
+from spotify_api.client import NETWORK_ERROR_STATUS, SessionTokenManager, SpotifyClient
 from spotify_api.token_manager import TokenManager
+
+NOT_FETCHABLE_TOOLTIP = (
+    "Spotify only lets apps read playlists you own or collaborate on. "
+    "Export this one with Exportify and use the CSV import instead."
+)
+STOP_WORKER_WAIT_MS = 3000
+
+DEVELOPMENT_MODE_GUIDANCE = (
+    "Spotify refused this request (403). HARMONI uses your own Spotify app, which runs in "
+    "Development Mode. Check that:\n"
+    "- the app owner has Spotify Premium\n"
+    "- your Spotify account (email) is added under User Management in the Spotify Developer Dashboard\n"
+    "- the playlist belongs to you, since Development Mode apps cannot read other people's playlists"
+)
+
+
+def spotify_error_feedback(status: int, message: str) -> tuple:
+    """Map a Spotify error status to (action, title, text), where action is "reconnect" or "warn".
+
+    @param status: HTTP status, NETWORK_ERROR_STATUS (0) for network failures, or -1 when unknown.
+    @param message: Error detail reported by the worker.
+    """
+    if status == 401:
+        return "reconnect", "Session Expired", message
+    if status == 403:
+        return "warn", "Spotify Access Denied", f"{DEVELOPMENT_MODE_GUIDANCE}\n\nDetails: {message}"
+    if status == 429:
+        return "warn", "Spotify Rate Limit", (
+            "Spotify is limiting how fast HARMONI can make requests. Wait a minute and try again."
+        )
+    if status == NETWORK_ERROR_STATUS:
+        return "warn", "Network Error", (
+            "Could not reach Spotify. Check your internet connection and try again. "
+            f"You are still connected.\n\nDetails: {message}"
+        )
+    return "warn", "Error", message
 
 
 class SpotifyView(QWidget):
     """View for Spotify playlist browsing and track selection."""
 
     connection_changed = Signal(bool)  # Emits connection status
+    navigate_to = Signal(str)
 
     def __init__(self, config: dict, queue: DownloadQueue, parent=None):
         super().__init__(parent)
         self.config = config
         self.queue = queue
         self.worker = None
+        self._token_manager = SessionTokenManager()
+        self._client = SpotifyClient(config, token_manager=self._token_manager)
+        self._retired_workers = []
+        self._download_fetch_worker = None
+        self._download_queue_playlists = []
         self.current_tracks = []
         self._tracks_cache = {}
         self._updating_checks = False
@@ -178,17 +223,34 @@ class SpotifyView(QWidget):
             # Check if expired
             if TokenManager.is_expired(token):
                 if token.refresh_token:
-                    try:
-                        auth.refresh_access_token(refresh_token=token.refresh_token)
-                        self._set_connected(True)
-                        return
-                    except Exception:
-                        pass
+                    refresh_token = token.refresh_token
+                    self.status_label.setText("Refreshing Spotify session...")
+                    self._refresh_thread = FunctionThread(
+                        lambda: auth.refresh_access_token(refresh_token=refresh_token)
+                    )
+                    self._refresh_thread.succeeded.connect(self._on_startup_refresh_succeeded)
+                    self._refresh_thread.failed.connect(self._on_startup_refresh_failed)
+                    self._refresh_thread.start()
+                    return
                 self._set_connected(False)
             else:
                 self._set_connected(True)
         else:
             self._set_connected(False)
+
+    def _on_startup_refresh_succeeded(self, _token):
+        """Mark the view connected after the background token refresh.
+
+        @param _token: The refreshed TokenInfo.
+        """
+        self._set_connected(True)
+
+    def _on_startup_refresh_failed(self, _error):
+        """Mark the view disconnected when the background token refresh fails.
+
+        @param _error: The exception raised by the refresh.
+        """
+        self._set_connected(False)
 
     def _set_connected(self, connected: bool):
         if connected:
@@ -211,12 +273,24 @@ class SpotifyView(QWidget):
             self.connection_changed.emit(False)
 
     def _show_oauth_dialog(self):
+        creds = check_spotify_credentials(self.config)
+        if not creds.get("ok"):
+            if oauth_dialog.prompt_spotify_setup(self, creds.get("message") or ""):
+                self._open_settings()
+            return
         dialog = SpotifyOAuthDialog(self.config, self)
+        dialog.auth = SpotifyPKCEAuth(self.config, token_manager=self._token_manager)
         dialog.auth_completed.connect(self._on_auth_completed)
+        dialog.open_settings_requested.connect(self._open_settings)
         dialog.exec()
+
+    def _open_settings(self):
+        """Ask the main window to switch to the Settings view."""
+        self.navigate_to.emit("settings")
 
     def _on_auth_completed(self, success: bool, message: str):
         if success:
+            self._client = SpotifyClient(self.config, token_manager=self._token_manager)
             self._set_connected(True)
         else:
             QMessageBox.warning(self, "Authentication Failed", message)
@@ -229,10 +303,11 @@ class SpotifyView(QWidget):
         )
         if reply != QMessageBox.Yes:
             return
-        ok = TokenManager().clear()
+        ok = self._token_manager.clear()
         if not ok:
             QMessageBox.warning(self, "Disconnect Failed", "Could not clear the cached Spotify token.")
             return
+        self._client = SpotifyClient(self.config, token_manager=self._token_manager)
         self._stop_worker()
         self._tracks_cache.clear()
         self.current_tracks = []
@@ -250,18 +325,44 @@ class SpotifyView(QWidget):
             self._show_oauth_dialog()
 
     def _stop_worker(self):
-        """Cancel any running worker before starting a new one."""
-        if self.worker and self.worker.isRunning():
-            self.worker.cancel()
-            if not self.worker.wait(2000):
-                self.worker.terminate()
+        """Cancel any running worker before starting a new one, keeping it alive until it finishes on its own."""
+        worker = self.worker
+        if not worker or not worker.isRunning():
+            return
+        self.worker = None
+        worker.cancel()
+        not_queued = 0
+        if worker is self._download_fetch_worker:
+            self._download_fetch_worker = None
+            not_queued = 1 + len(self._download_queue_playlists)
+            self._download_queue_playlists = []
+        if not worker.wait(STOP_WORKER_WAIT_MS):
+            self._retired_workers.append(worker)
+            worker.finished.connect(lambda w=worker: self._release_worker(w))
+        if not_queued:
+            QMessageBox.information(
+                self, "Download Fetch Stopped",
+                f"Stopped fetching playlists for download. {not_queued} playlist(s) were not queued.",
+            )
+
+    def _release_worker(self, worker):
+        """Drop the reference to a cancelled worker once its thread has finished.
+
+        @param worker: The SpotifyWorker that finished.
+        """
+        if worker in self._retired_workers:
+            self._retired_workers.remove(worker)
+
+    def _new_worker(self) -> SpotifyWorker:
+        """Create a worker that uses the view's shared Spotify client."""
+        return SpotifyWorker(self.config, client=self._client)
 
     def _refresh_playlists(self):
         self._stop_worker()
         self._tracks_cache.clear()
-        self.worker = SpotifyWorker(self.config)
+        self.worker = self._new_worker()
         self.worker.playlists_loaded.connect(self._on_playlists_loaded)
-        self.worker.error.connect(self._on_error)
+        self.worker.error_status.connect(self._on_error)
         self.worker.progress.connect(self._on_progress)
         self.worker.fetch_playlists()
         self.progress_bar.setRange(0, 0)
@@ -278,7 +379,18 @@ class SpotifyView(QWidget):
             label = f"{name} ({count} tracks)" if count > 0 else name
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, playlist)
+            if not self._is_fetchable(playlist):
+                item.setForeground(QColor(COLORS["text_muted"]))
+                item.setToolTip(NOT_FETCHABLE_TOOLTIP)
             self.playlist_list.addItem(item)
+
+    @staticmethod
+    def _is_fetchable(playlist) -> bool:
+        """Return whether Spotify lets the app read this playlist's items.
+
+        @param playlist: Playlist dict from the worker, or None.
+        """
+        return bool(playlist) and playlist.get("fetchable", True) is not False
 
     def _load_selected_playlists(self):
         """Queue all selected playlists for loading."""
@@ -287,12 +399,18 @@ class SpotifyView(QWidget):
             QMessageBox.information(self, "No Selection", "Select playlists first (cmd+click for multiple).")
             return
         self._load_queue = []
+        skipped = 0
         for item in selected:
             playlist = item.data(Qt.UserRole)
-            if playlist and playlist.get("id") and playlist["id"] not in self._tracks_cache:
+            if not self._is_fetchable(playlist):
+                skipped += 1
+                continue
+            if playlist.get("id") and playlist["id"] not in self._tracks_cache:
                 self._load_queue.append((item, playlist))
         if self._load_queue:
             self._load_next_playlist()
+        elif skipped:
+            QMessageBox.information(self, "Cannot Load", f"{skipped} playlist(s) skipped.\n\n{NOT_FETCHABLE_TOOLTIP}")
         else:
             QMessageBox.information(self, "Already Loaded", "All selected playlists are already loaded.")
 
@@ -311,11 +429,17 @@ class SpotifyView(QWidget):
             QMessageBox.information(self, "No Selection", "Select playlists first (cmd+click for multiple).")
             return
 
+        if self._download_fetch_worker is not None and self._download_fetch_worker is self.worker:
+            self._stop_worker()
         queued_count = 0
+        skipped = 0
         self._download_queue_playlists = []
         for item in selected:
             playlist = item.data(Qt.UserRole)
             if not playlist or not playlist.get("id"):
+                continue
+            if not self._is_fetchable(playlist):
+                skipped += 1
                 continue
             pid = playlist["id"]
             if pid in self._tracks_cache:
@@ -327,11 +451,17 @@ class SpotifyView(QWidget):
         if self._download_queue_playlists:
             self._fetch_and_queue_next()
 
+        messages = []
         if queued_count > 0:
             msg = f"Added {queued_count} cached tracks to download queue."
             if self._download_queue_playlists:
                 msg += f"\nFetching {len(self._download_queue_playlists)} more playlist(s)..."
-            QMessageBox.information(self, "Added to Queue", msg)
+            messages.append(msg)
+        if skipped:
+            messages.append(f"Skipped {skipped} playlist(s).\n{NOT_FETCHABLE_TOOLTIP}")
+        if messages:
+            title = "Added to Queue" if queued_count > 0 else "Playlists Skipped"
+            QMessageBox.information(self, title, "\n\n".join(messages))
 
     def _fetch_and_queue_next(self):
         if not self._download_queue_playlists:
@@ -339,15 +469,17 @@ class SpotifyView(QWidget):
             return
         self._stop_worker()
         playlist = self._download_queue_playlists.pop(0)
-        self.worker = SpotifyWorker(self.config)
+        self.worker = self._new_worker()
+        self._download_fetch_worker = self.worker
         self.worker.tracks_loaded.connect(self._on_download_tracks_loaded)
-        self.worker.error.connect(self._on_error)
+        self.worker.error_status.connect(self._on_error)
         self.worker.progress.connect(self._on_progress)
         self.worker.fetch_playlist_tracks(playlist["id"], playlist["name"])
         self.progress_bar.setRange(0, 0)
         self.progress_bar.show()
 
     def _on_download_tracks_loaded(self, playlist_id: str, tracks: list):
+        self._download_fetch_worker = None
         self.progress_bar.hide()
         self._tracks_cache[playlist_id] = tracks
         self._update_playlist_track_count(playlist_id, len(tracks))
@@ -365,12 +497,16 @@ class SpotifyView(QWidget):
         """Download a single playlist — use cache if available, fetch otherwise."""
         pid = playlist.get("id")
         name = playlist.get("name", "Unknown")
+        if not self._is_fetchable(playlist):
+            QMessageBox.information(self, "Cannot Download", f"\"{name}\" was not downloaded.\n\n{NOT_FETCHABLE_TOOLTIP}")
+            return
         if pid in self._tracks_cache:
             tracks = self._tracks_cache[pid]
             self.queue.add_tracks(tracks, playlist=name)
             QMessageBox.information(self, "Added to Queue",
                 f"Added {len(tracks)} tracks from \"{name}\" to download queue.")
         else:
+            self._stop_worker()
             self._download_queue_playlists = [playlist]
             self._fetch_and_queue_next()
 
@@ -388,6 +524,9 @@ class SpotifyView(QWidget):
         playlist = item.data(Qt.UserRole)
         if not playlist:
             return
+        if not self._is_fetchable(playlist):
+            QMessageBox.information(self, "Cannot Load", f"\"{playlist.get('name', '')}\"\n\n{NOT_FETCHABLE_TOOLTIP}")
+            return
         pid = playlist["id"]
         self.tracks_label.setText(f"Tracks - {playlist['name']}")
 
@@ -396,10 +535,10 @@ class SpotifyView(QWidget):
             return
 
         self._stop_worker()
-        self.worker = SpotifyWorker(self.config)
+        self.worker = self._new_worker()
         self.worker.tracks_batch.connect(self._on_tracks_batch)
         self.worker.tracks_loaded.connect(self._on_tracks_loaded)
-        self.worker.error.connect(self._on_error)
+        self.worker.error_status.connect(self._on_error)
         self.worker.progress.connect(self._on_progress)
         self.worker.fetch_playlist_tracks(pid, playlist["name"])
         self.progress_bar.setRange(0, 0)
@@ -417,10 +556,10 @@ class SpotifyView(QWidget):
             return
 
         self._stop_worker()
-        self.worker = SpotifyWorker(self.config)
+        self.worker = self._new_worker()
         self.worker.tracks_batch.connect(self._on_tracks_batch)
         self.worker.liked_songs_loaded.connect(self._on_liked_songs_loaded)
-        self.worker.error.connect(self._on_error)
+        self.worker.error_status.connect(self._on_error)
         self.worker.progress.connect(self._on_progress)
         self.worker.fetch_liked_songs()
         self.progress_bar.setRange(0, 0)
@@ -604,12 +743,15 @@ class SpotifyView(QWidget):
         if item:
             playlist = item.data(Qt.UserRole)
             if playlist:
+                fetchable = self._is_fetchable(playlist)
                 load = QAction(f"Load \"{playlist.get('name', '')}\"", self)
                 load.triggered.connect(lambda checked, i=item: self._on_playlist_selected(i))
+                load.setEnabled(fetchable)
                 menu.addAction(load)
 
                 dl = QAction(f"Download \"{playlist.get('name', '')}\"", self)
                 dl.triggered.connect(lambda checked, p=playlist: self._download_single_playlist(p))
+                dl.setEnabled(fetchable)
                 menu.addAction(dl)
         menu.addSeparator()
         sa = QAction("Select All Playlists", self)
@@ -643,6 +785,7 @@ class SpotifyView(QWidget):
                 track.get("artist", "").strip(),
                 track.get("track", "").strip(),
                 playlist_name,
+                track_data=track,
             )
             QMessageBox.information(
                 self, "Added to Queue",
@@ -671,13 +814,19 @@ class SpotifyView(QWidget):
         else:
             self.progress_bar.setRange(0, 0)
 
-    def _on_error(self, message: str):
+    def _on_error(self, status: int, message: str):
         self.progress_bar.hide()
         self.refresh_btn.setEnabled(True)
         self.liked_btn.setEnabled(True)
-        msg_lower = message.lower()
-        if "401" in message or "token" in msg_lower or "expired" in msg_lower:
+        action, title, text = spotify_error_feedback(status, message)
+        if self._download_fetch_worker is not None:
+            self._download_fetch_worker = None
+            not_queued = len(self._download_queue_playlists)
+            self._download_queue_playlists = []
+            if not_queued:
+                text += f"\n\n{not_queued} more playlist(s) were not queued."
+        if action == "reconnect":
             self._set_connected(False)
             self._prompt_reconnect()
         else:
-            QMessageBox.warning(self, "Error", message)
+            QMessageBox.warning(self, title, text)

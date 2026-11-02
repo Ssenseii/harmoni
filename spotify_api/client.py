@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -11,6 +12,58 @@ from utils.logger import log_warning
 
 
 SPOTIFY_API_BASE_URL = "https://api.spotify.com/v1"
+NETWORK_ERROR_STATUS = 0
+DEFAULT_MAX_RETRY_AFTER = 30.0
+
+
+class SpotifyAPIError(RuntimeError):
+    """A failed Spotify request with its HTTP status (0 for network failures) and endpoint."""
+
+    def __init__(self, status: int, endpoint: str, message: str):
+        """Build the error and its display text.
+
+        @param status: HTTP status code, or NETWORK_ERROR_STATUS when no response arrived.
+        @param endpoint: Method and path that failed, for example "GET /me/playlists".
+        @param message: Server or transport detail for the user.
+        """
+        self.status = int(status)
+        self.endpoint = endpoint
+        self.message = message
+        text = f"Spotify API error {self.status}: {message}" if self.status else message
+        super().__init__(text)
+
+
+class SessionTokenManager(TokenManager):
+    """TokenManager that also keeps the latest token in memory, so a session works with spotify_cache_tokens off."""
+
+    def __init__(self, **kwargs: Any):
+        """Create the manager with an empty in-memory slot.
+
+        @param kwargs: Passed to TokenManager, for example cache_path.
+        """
+        super().__init__(**kwargs)
+        self._memory: Optional[TokenInfo] = None
+
+    def load(self, config: Dict[str, Any]) -> Optional[TokenInfo]:
+        """Return the in-memory token, or the disk cache when none is held.
+
+        @param config: HARMONI config, which decides whether the disk cache is used.
+        """
+        return self._memory or super().load(config)
+
+    def save(self, config: Dict[str, Any], token: TokenInfo) -> bool:
+        """Hold the token in memory and persist it when caching is enabled.
+
+        @param config: HARMONI config, which decides whether the disk cache is used.
+        @param token: Token to keep.
+        """
+        self._memory = token
+        return super().save(config, token)
+
+    def clear(self) -> bool:
+        """Forget the in-memory token and remove the disk cache."""
+        self._memory = None
+        return super().clear()
 
 
 class SpotifyClient:
@@ -27,6 +80,7 @@ class SpotifyClient:
         self.config = config or {}
         self.token_manager = token_manager or TokenManager()
         self._token: Optional[TokenInfo] = None
+        self._refresh_lock = threading.Lock()
 
     # -----------------
     # Token management
@@ -52,10 +106,24 @@ class SpotifyClient:
         if not self._token.refresh_token:
             raise RuntimeError("Spotify token expired and no refresh_token is available.")
 
-        auth = SpotifyPKCEAuth(self.config, token_manager=self.token_manager)
-        refreshed = auth.refresh_access_token(refresh_token=self._token.refresh_token)
-        self._token = refreshed
-        return refreshed
+        return self._refresh_token(self._token, only_if_expired=True)
+
+    def _refresh_token(self, stale: TokenInfo, *, only_if_expired: bool) -> TokenInfo:
+        """Refresh the token once across threads, returning a newer token another thread already got.
+
+        @param stale: The token the caller found unusable.
+        @param only_if_expired: Skip the refresh when the current token is not expired.
+        """
+        with self._refresh_lock:
+            current = self._token
+            if current is not None and current is not stale:
+                return current
+            if only_if_expired and current is not None and not self.token_manager.is_expired(current):
+                return current
+            auth = SpotifyPKCEAuth(self.config, token_manager=self.token_manager)
+            refreshed = auth.refresh_access_token(refresh_token=stale.refresh_token)
+            self._token = refreshed
+            return refreshed
 
     # -----------------
     # HTTP helpers
@@ -148,11 +216,9 @@ class SpotifyClient:
 
                 # 401: token invalid/expired (server-side); try refresh once.
                 if status == 401 and retry_401_refresh and attempt <= max_retries:
-                    if self._token and self._token.refresh_token and bool(self.config.get("spotify_auto_refresh", True)):
+                    if token.refresh_token and bool(self.config.get("spotify_auto_refresh", True)):
                         try:
-                            auth = SpotifyPKCEAuth(self.config, token_manager=self.token_manager)
-                            refreshed = auth.refresh_access_token(refresh_token=self._token.refresh_token)
-                            self._token = refreshed
+                            self._refresh_token(token, only_if_expired=False)
                             retry_401_refresh = False
                             continue
                         except Exception:
@@ -166,7 +232,8 @@ class SpotifyClient:
                         delay = float(retry_after) if retry_after is not None else 1.0
                     except Exception:
                         delay = 1.0
-                    self._sleep_with_jitter(max(1.0, delay))
+                    max_retry_after = float(self.config.get("spotify_max_retry_after", DEFAULT_MAX_RETRY_AFTER))
+                    self._sleep_with_jitter(min(max_retry_after, max(1.0, delay)))
                     continue
 
                 # 5xx: transient errors.
@@ -184,13 +251,15 @@ class SpotifyClient:
                 except Exception:
                     pass
 
-                raise RuntimeError(f"Spotify API error {status}: {detail}") from e
+                raise SpotifyAPIError(status, f"{method.upper()} {path}", detail) from e
             except Exception as e:
                 if attempt <= max_retries:
                     delay = backoff_base * (2 ** max(0, attempt - 1))
                     self._sleep_with_jitter(min(30.0, delay))
                     continue
-                raise RuntimeError(f"Spotify API request failed: {e}") from e
+                raise SpotifyAPIError(
+                    NETWORK_ERROR_STATUS, f"{method.upper()} {path}", f"Spotify API request failed: {e}"
+                ) from e
 
             if not body:
                 return {}

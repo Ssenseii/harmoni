@@ -17,10 +17,7 @@ from .token_manager import TokenInfo, TokenManager
 logger = logging.getLogger(__name__)
 
 SPOTIFY_ACCOUNTS_BASE_URL = "https://accounts.spotify.com"
-
-# Exportify's public Client ID (convenient fallback, but could change upstream).
-# Source: exportify/exportify.js
-EXPORTIFY_FALLBACK_CLIENT_ID = "d99b082b01d74d61a100c9a0e056380b"
+DEFAULT_SPOTIFY_REDIRECT_URI = "http://127.0.0.1:8888/callback"
 
 
 def _base64url_no_pad(raw: bytes) -> str:
@@ -35,11 +32,10 @@ def code_challenge_from_verifier(verifier: str) -> str:
 
 
 def get_effective_spotify_client_id(config: dict) -> str:
-    """Return the Spotify Client ID to use (config value or Exportify fallback)."""
+    """Return the configured Spotify Client ID, or "" when none is set."""
 
     config = config or {}
-    client_id = str(config.get("spotify_client_id", "")).strip()
-    return client_id or EXPORTIFY_FALLBACK_CLIENT_ID
+    return str(config.get("spotify_client_id", "") or "").strip()
 
 
 def check_spotify_credentials(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -49,9 +45,8 @@ def check_spotify_credentials(config: Dict[str, Any]) -> Dict[str, Any]:
     redirect_uri = str(config.get("spotify_redirect_uri", "")).strip()
     scopes = list(config.get("spotify_scopes", []) or [])
 
-    client_id_raw = str(config.get("spotify_client_id", "")).strip()
     client_id = get_effective_spotify_client_id(config)
-    client_id_source = "config" if client_id_raw else "exportify_fallback"
+    client_id_source = "config" if client_id else "missing"
 
     if not redirect_uri:
         return {
@@ -66,17 +61,16 @@ def check_spotify_credentials(config: Dict[str, Any]) -> Dict[str, Any]:
             ),
         }
 
-    if client_id_source == "exportify_fallback":
+    if not client_id:
         return {
-            "ok": True,
+            "ok": False,
             "client_id": client_id,
             "client_id_source": client_id_source,
             "redirect_uri": redirect_uri,
             "scopes": scopes,
             "message": (
-                "spotify_client_id is not set. Falling back to Exportify's public client id.\n"
-                "For reliability and to avoid breakage if Exportify rotates credentials, create your own Spotify app\n"
-                "and set spotify_client_id in config.json (see spotify_app_setup_instructions())."
+                "Spotify Client ID is not set. HARMONI needs your own Spotify Developer app.\n\n"
+                + spotify_app_setup_instructions(redirect_uri=redirect_uri)
             ),
         }
 
@@ -90,17 +84,19 @@ def check_spotify_credentials(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def spotify_app_setup_instructions(*, redirect_uri: str = "http://127.0.0.1:8888/callback") -> str:
+def spotify_app_setup_instructions(*, redirect_uri: str = DEFAULT_SPOTIFY_REDIRECT_URI) -> str:
     """Return user-facing setup instructions for creating a Spotify Developer app."""
 
-    redirect_uri = str(redirect_uri or "").strip() or "http://127.0.0.1:8888/callback"
+    redirect_uri = str(redirect_uri or "").strip() or DEFAULT_SPOTIFY_REDIRECT_URI
     return (
-        "Spotify app setup (recommended):\n"
-        "1) Go to https://developer.spotify.com/dashboard\n"
-        "2) Create an app (or select an existing app)\n"
-        f"3) Add this Redirect URI in the app settings: {redirect_uri}\n"
-        "4) Copy the Client ID into harmoni/config.json as spotify_client_id\n"
-        "5) Keep spotify_scopes as-is unless you know you need different permissions\n\n"
+        "Spotify app setup (required):\n"
+        "1) Go to https://developer.spotify.com/dashboard and create an app\n"
+        f"2) Add this Redirect URI in the app settings, exactly: {redirect_uri}\n"
+        "3) The app owner needs Spotify Premium (Spotify requires it for Development Mode apps)\n"
+        "4) Under User Management, add every person who will log in, by their Spotify email.\n"
+        "   Development Mode apps only allow listed users, including yourself.\n"
+        "5) Copy the Client ID into Settings (or config.json as spotify_client_id)\n"
+        "6) Keep spotify_scopes as-is unless you know you need different permissions\n\n"
         "Notes:\n"
         "- This project uses Authorization Code + PKCE (no client secret required).\n"
         "- Redirect URI must match *exactly* what you configure in the Spotify dashboard.\n"
@@ -159,6 +155,8 @@ class SpotifyPKCEAuth:
         show_dialog: bool = False,
     ) -> str:
         client_id = get_effective_spotify_client_id(self.config)
+        if not client_id:
+            raise ValueError("Missing config.spotify_client_id. Create a Spotify app and set its Client ID first.")
         redirect_uri = str(self.config.get("spotify_redirect_uri", "")).strip()
         if not redirect_uri:
             raise ValueError("Missing config.spotify_redirect_uri")
@@ -246,6 +244,9 @@ class SpotifyPKCEAuth:
                 "Missing dependency: httpx. Install requirements (pip install -r requirements.txt) to use Spotify OAuth."
             )
 
+        from .client import NETWORK_ERROR_STATUS, SpotifyAPIError
+
+        endpoint = f"POST {urllib.parse.urlparse(url).path}"
         try:
             with httpx.Client(timeout=30.0, follow_redirects=False) as client:
                 resp = client.post(
@@ -254,10 +255,10 @@ class SpotifyPKCEAuth:
                     headers={"Content-Type": "application/x-www-form-urlencoded"},
                 )
         except Exception as e:
-            raise RuntimeError(f"Spotify token request failed: {e}") from e
+            raise SpotifyAPIError(NETWORK_ERROR_STATUS, endpoint, f"Spotify token request failed: {e}") from e
 
         if resp.status_code >= 400:
-            raise RuntimeError(f"Spotify token request failed (HTTP {resp.status_code}): {resp.text}")
+            raise SpotifyAPIError(resp.status_code, endpoint, f"Spotify token request failed: {resp.text}")
 
         try:
             payload = resp.json()

@@ -1,29 +1,18 @@
 """Spotify API worker thread for fetching playlists and tracks."""
 
-from typing import List, Optional
+from typing import Optional
 from PySide6.QtCore import QThread, Signal
 
-from spotify_api.auth import SpotifyPKCEAuth
-from spotify_api.client import SpotifyClient
-from spotify_api.token_manager import TokenManager
+from spotify_api.client import NETWORK_ERROR_STATUS, SpotifyAPIError, SpotifyClient
+from spotify_api.data_loader import SpotifyDataLoader
 
-
-def extract_artist_names(track_obj: dict) -> str:
-    """Join a Spotify track object's artist names into a display string.
-
-    Some Spotify API responses include an artist entry with "name": None
-    (e.g. unavailable/removed artists). Using dict.get("name", "") does not
-    catch that case, since the default only applies when the key is missing,
-    so it must be filtered out explicitly before joining.
-    """
-    names = [a.get("name") or "" for a in track_obj.get("artists", [])]
-    names = [n for n in names if n]
-    return ", ".join(names) if names else "Unknown Artist"
+UNKNOWN_ERROR_STATUS = -1
+LIKED_SONGS_ID = "__liked_songs__"
 
 
 class SpotifyWorker(QThread):
     """
-    Worker thread for Spotify API operations.
+    Worker thread for Spotify API operations, running SpotifyDataLoader off the UI thread.
 
     Signals:
         playlists_loaded: Emitted when playlists are loaded
@@ -38,11 +27,19 @@ class SpotifyWorker(QThread):
     tracks_batch = Signal(str, list)  # playlist_id, batch of tracks (streaming)
     liked_songs_loaded = Signal(list)  # List of track dicts
     error = Signal(str)  # Error message
+    error_status = Signal(int, str)  # HTTP status (0 network, -1 unknown), error message
     progress = Signal(str, int, int)  # message, current, total
 
-    def __init__(self, config: dict, parent=None):
+    def __init__(self, config: dict, parent=None, *, client: Optional[SpotifyClient] = None):
+        """Create the worker.
+
+        @param config: HARMONI config.
+        @param parent: Optional Qt parent.
+        @param client: Shared SpotifyClient that holds the session token. A new one is built from config when omitted.
+        """
         super().__init__(parent)
         self.config = config
+        self._client = client
         self._task = None
         self._task_args = {}
         self._cancelled = False
@@ -70,173 +67,102 @@ class SpotifyWorker(QThread):
         self._cancelled = False
 
         try:
-            # Get access token
-            auth = SpotifyPKCEAuth(self.config)
-            token_info = auth.load_cached_token()
-
-            if not token_info or not token_info.access_token:
-                self.error.emit("Not connected to Spotify. Please log in first.")
+            client = self._client or SpotifyClient(self.config)
+            try:
+                client.get_token()
+            except SpotifyAPIError as e:
+                network = e.status == NETWORK_ERROR_STATUS
+                self._emit_error(NETWORK_ERROR_STATUS if network else 401, f"Failed to refresh token: {e}")
+                return
+            except RuntimeError:
+                self._emit_error(401, "Not connected to Spotify. Please log in first.")
                 return
 
-            # Check if token needs refresh
-            if TokenManager.is_expired(token_info):
-                if token_info.refresh_token:
-                    try:
-                        token_info = auth.refresh_access_token(
-                            refresh_token=token_info.refresh_token
-                        )
-                    except Exception as e:
-                        self.error.emit(f"Failed to refresh token: {e}")
-                        return
-                else:
-                    self.error.emit("Token expired. Please log in again.")
-                    return
-
-            # Create Spotify client
-            client = SpotifyClient(self.config)
-            client.set_token(token_info)
-
-            # Execute task
+            loader = SpotifyDataLoader(client)
             if self._task == "playlists":
-                self._fetch_playlists(client)
+                self._fetch_playlists(loader)
             elif self._task == "playlist_tracks":
-                self._fetch_playlist_tracks(client)
+                self._fetch_playlist_tracks(loader)
             elif self._task == "liked_songs":
-                self._fetch_liked_songs(client)
+                self._fetch_liked_songs(loader)
 
         except Exception as e:
             if not self._cancelled:
-                self.error.emit(str(e))
+                status = e.status if isinstance(e, SpotifyAPIError) else UNKNOWN_ERROR_STATUS
+                self._emit_error(status, str(e))
 
-    def _fetch_playlists(self, client: SpotifyClient):
-        """Fetch all user playlists."""
+    def _emit_error(self, status: int, message: str):
+        """Report a failure on both the plain and the status-carrying error signals.
+
+        @param status: HTTP status, NETWORK_ERROR_STATUS, or UNKNOWN_ERROR_STATUS.
+        @param message: Text for the user.
+        """
+        self.error_status.emit(status, message)
+        self.error.emit(message)
+
+    def _is_cancelled(self) -> bool:
+        """Return whether cancel() was called, for the loader's should_cancel hook."""
+        return self._cancelled
+
+    def _batch_emitter(self, label: str, playlist_id: Optional[str] = None):
+        """Build an on_batch callback that reports progress against the page total and streams tracks for playlist_id.
+
+        @param label: Text shown in progress messages, for example "tracks from My Mix".
+        @param playlist_id: Id sent with each tracks_batch emission. Nothing is streamed when omitted.
+        """
+        loaded = 0
+
+        def on_batch(batch: list, total: int):
+            nonlocal loaded
+            if self._cancelled:
+                return
+            loaded += len(batch)
+            if playlist_id is not None:
+                self.tracks_batch.emit(playlist_id, batch)
+            self.progress.emit(f"Loaded {loaded} of {total} {label}", loaded, total)
+
+        return on_batch
+
+    def _fetch_playlists(self, loader: SpotifyDataLoader):
+        """Fetch all user playlists.
+
+        @param loader: Loader bound to the session client.
+        """
         self.progress.emit("Fetching playlists...", 0, 0)
-
-        playlists = []
-        offset = 0
-        limit = 50
-
-        while not self._cancelled:
-            result = client.current_user_playlists(limit=limit, offset=offset)
-            items = result.get("items", [])
-
-            for item in items:
-                playlist = {
-                    "id": item.get("id"),
-                    "name": item.get("name"),
-                    "owner": item.get("owner", {}).get("display_name", "Unknown"),
-                    "tracks_total": item.get("tracks", {}).get("total", 0),
-                    "image_url": item.get("images", [{}])[0].get("url") if item.get("images") else None,
-                }
-                playlists.append(playlist)
-
-            total = result.get("total", 0)
-            self.progress.emit(f"Loaded {len(playlists)} of {total} playlists", len(playlists), total)
-
-            if result.get("next"):
-                offset += limit
-            else:
-                break
-
+        playlists = loader.list_all_playlists(
+            limit=50, on_batch=self._batch_emitter("playlists"), should_cancel=self._is_cancelled
+        )
         if not self._cancelled:
             self.playlists_loaded.emit(playlists)
 
-    def _fetch_playlist_tracks(self, client: SpotifyClient):
-        """Fetch tracks from a specific playlist."""
+    def _fetch_playlist_tracks(self, loader: SpotifyDataLoader):
+        """Fetch tracks from a specific playlist.
+
+        @param loader: Loader bound to the session client.
+        """
         playlist_id = self._task_args.get("playlist_id")
         playlist_name = self._task_args.get("playlist_name", "")
-
         self.progress.emit(f"Fetching tracks from {playlist_name}...", 0, 0)
-
-        tracks = []
-        offset = 0
-        limit = 100
-
-        while not self._cancelled:
-            result = client.playlist_items(playlist_id, limit=limit, offset=offset)
-            items = result.get("items", [])
-
-            batch = []
-            for item in items:
-                track_obj = item.get("item") or item.get("track")
-                if not track_obj:
-                    continue
-
-                # Skip local files and unavailable tracks
-                if track_obj.get("is_local") or not track_obj.get("id"):
-                    continue
-
-                track = {
-                    "artist": extract_artist_names(track_obj),
-                    "track": track_obj.get("name", "Unknown Track"),
-                    "album": track_obj.get("album", {}).get("name", ""),
-                    "duration_ms": track_obj.get("duration_ms", 0),
-                    "spotify_id": track_obj.get("id"),
-                }
-                tracks.append(track)
-                batch.append(track)
-
-            if batch and not self._cancelled:
-                self.tracks_batch.emit(playlist_id, batch)
-
-            total = result.get("total", 0)
-            self.progress.emit(
-                f"Loaded {len(tracks)} of {total} tracks from {playlist_name}",
-                len(tracks),
-                total
-            )
-
-            if result.get("next"):
-                offset += limit
-            else:
-                break
-
+        tracks = loader.load_playlist_tracks(
+            playlist_id,
+            limit=100,
+            on_batch=self._batch_emitter(f"tracks from {playlist_name}", playlist_id),
+            should_cancel=self._is_cancelled,
+        )
         if not self._cancelled:
             self.tracks_loaded.emit(playlist_id, tracks)
 
-    def _fetch_liked_songs(self, client: SpotifyClient):
-        """Fetch user's liked songs."""
+    def _fetch_liked_songs(self, loader: SpotifyDataLoader):
+        """Fetch user's liked songs.
+
+        @param loader: Loader bound to the session client.
+        """
         self.progress.emit("Fetching liked songs...", 0, 0)
-
-        tracks = []
-        offset = 0
-        limit = 50
-
-        while not self._cancelled:
-            result = client.current_user_saved_tracks(limit=limit, offset=offset)
-            items = result.get("items", [])
-
-            batch = []
-            for item in items:
-                track_obj = item.get("track")
-                if not track_obj:
-                    continue
-
-                # Skip local files
-                if track_obj.get("is_local") or not track_obj.get("id"):
-                    continue
-
-                track = {
-                    "artist": extract_artist_names(track_obj),
-                    "track": track_obj.get("name", "Unknown Track"),
-                    "album": track_obj.get("album", {}).get("name", ""),
-                    "duration_ms": track_obj.get("duration_ms", 0),
-                    "spotify_id": track_obj.get("id"),
-                }
-                tracks.append(track)
-                batch.append(track)
-
-            if batch and not self._cancelled:
-                self.tracks_batch.emit("__liked_songs__", batch)
-
-            total = result.get("total", 0)
-            self.progress.emit(f"Loaded {len(tracks)} of {total} liked songs", len(tracks), total)
-
-            if result.get("next"):
-                offset += limit
-            else:
-                break
-
+        tracks = loader.load_liked_songs(
+            limit=50,
+            on_batch=self._batch_emitter("liked songs", LIKED_SONGS_ID),
+            should_cancel=self._is_cancelled,
+        )
         if not self._cancelled:
             self.liked_songs_loaded.emit(tracks)
 

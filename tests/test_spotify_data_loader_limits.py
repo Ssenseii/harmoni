@@ -15,6 +15,9 @@ class FakeSpotifyClient:
         self.total_playlist_tracks = total_playlist_tracks
         self.total_playlists = total_playlists
 
+    def me(self):
+        return {"id": "me", "display_name": "Me"}
+
     def current_user_saved_tracks(self, *, limit: int = 50, offset: int = 0):
         remaining = max(0, self.total_liked - offset)
         n = min(int(limit), remaining)
@@ -49,7 +52,7 @@ class FakeSpotifyClient:
             items.append(
                 {
                     "added_at": "2020-01-01T00:00:00Z",
-                    "track": {
+                    "item": {
                         "id": f"pl{idx}",
                         "uri": f"spotify:track:pl{idx}",
                         "name": f"Playlist Song {idx}",
@@ -75,8 +78,8 @@ class FakeSpotifyClient:
                 {
                     "id": f"playlist{idx}",
                     "name": f"Playlist {idx}",
-                    "tracks": {"total": 123},
-                    "owner": {"display_name": "Me"},
+                    "items": {"total": 123},
+                    "owner": {"id": "me", "display_name": "Me"},
                     "public": False,
                 }
             )
@@ -105,6 +108,8 @@ class TestSpotifyDataLoaderLimits(unittest.TestCase):
         self.assertEqual(len(pls), 20)
         self.assertEqual(pls[0]["id"], "playlist0")
         self.assertEqual(pls[-1]["id"], "playlist19")
+        self.assertEqual(pls[0]["tracks_total"], 123)
+        self.assertTrue(pls[0]["fetchable"])
 
 
 if __name__ == "__main__":

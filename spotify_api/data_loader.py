@@ -1,6 +1,18 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .client import SpotifyClient
+
+
+def playlist_total(p: Dict[str, Any]) -> Optional[int]:
+    """Return a playlist's item count from the Feb 2026 "items" field, falling back to the legacy "tracks" field.
+
+    @param p: Playlist object from the Spotify Web API.
+    """
+    for key in ("items", "tracks"):
+        field = p.get(key)
+        if isinstance(field, dict) and field.get("total") is not None:
+            return field.get("total")
+    return None
 
 
 class SpotifyDataLoader:
@@ -16,34 +28,57 @@ class SpotifyDataLoader:
 
     def __init__(self, client: SpotifyClient):
         self.client = client
+        self._me: Optional[Dict[str, Any]] = None
 
-    def list_all_playlists(self, *, limit: int = 50, max_playlists: Optional[int] = None) -> List[Dict[str, Any]]:
-        playlists: List[Dict[str, Any]] = []
+    def current_user(self) -> Dict[str, Any]:
+        """Return the /me profile, fetched once per loader."""
+        if self._me is None:
+            self._me = self.client.me() or {}
+        return self._me
+
+    def _collect_pages(
+        self,
+        fetch_page: Callable[[int, int], Dict[str, Any]],
+        convert: Callable[[Any], Optional[Dict[str, Any]]],
+        *,
+        limit: int,
+        max_items: Optional[int],
+        on_batch: Optional[Callable[[List[Dict[str, Any]], int], None]],
+        should_cancel: Optional[Callable[[], bool]],
+    ) -> List[Dict[str, Any]]:
+        """Page through an {items, total} endpoint and return the converted items.
+
+        @param fetch_page: Called with (limit, offset) and returns one page.
+        @param convert: Maps one raw entry to a dict, or None to skip it.
+        @param limit: Page size.
+        @param max_items: Optional cap on the number of converted items.
+        @param on_batch: Optional callback given each page's converted items and the total Spotify reports.
+        @param should_cancel: Optional callable checked before each page request.
+        """
+        out: List[Dict[str, Any]] = []
         offset = 0
 
         while True:
-            if max_playlists is not None and len(playlists) >= int(max_playlists):
+            if max_items is not None and len(out) >= int(max_items):
+                break
+            if should_cancel is not None and should_cancel():
                 break
 
-            page = self.client.current_user_playlists(limit=limit, offset=offset)
+            page = fetch_page(limit, offset)
             items = page.get("items") or []
-            for p in items:
-                if not isinstance(p, dict):
-                    continue
-                playlists.append(
-                    {
-                        "id": p.get("id"),
-                        "name": p.get("name"),
-                        "tracks_total": (p.get("tracks") or {}).get("total"),
-                        "owner": ((p.get("owner") or {}).get("display_name") if isinstance(p.get("owner"), dict) else None),
-                        "public": p.get("public"),
-                    }
-                )
 
-                if max_playlists is not None and len(playlists) >= int(max_playlists):
+            batch: List[Dict[str, Any]] = []
+            for raw in items:
+                converted = convert(raw)
+                if converted:
+                    batch.append(converted)
+                if max_items is not None and len(out) + len(batch) >= int(max_items):
                     break
-
+            out.extend(batch)
             total = page.get("total")
+            if batch and on_batch is not None:
+                on_batch(batch, int(total or 0))
+
             if total is None:
                 break
 
@@ -54,7 +89,71 @@ class SpotifyDataLoader:
             if not items:
                 break
 
-        return playlists
+        return out
+
+    def list_all_playlists(
+        self,
+        *,
+        limit: int = 50,
+        max_playlists: Optional[int] = None,
+        on_batch: Optional[Callable[[List[Dict[str, Any]], int], None]] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return the current user's playlists, each marked fetchable when Spotify lets the app read its items.
+
+        @param limit: Page size.
+        @param max_playlists: Optional cap on the number of playlists.
+        @param on_batch: Optional callback given each page's playlists and the total Spotify reports.
+        @param should_cancel: Optional callable checked before each page request.
+        """
+        me_id = self.current_user().get("id")
+
+        def convert(p: Any) -> Optional[Dict[str, Any]]:
+            if not isinstance(p, dict):
+                return None
+            owner = p.get("owner") if isinstance(p.get("owner"), dict) else {}
+            owner_id = owner.get("id")
+            collaborative = bool(p.get("collaborative"))
+            images = p.get("images") or []
+            return {
+                "id": p.get("id"),
+                "name": p.get("name"),
+                "tracks_total": playlist_total(p),
+                "owner": owner.get("display_name"),
+                "owner_id": owner_id,
+                "collaborative": collaborative,
+                "fetchable": collaborative or (owner_id is not None and owner_id == me_id),
+                "public": p.get("public"),
+                "image_url": images[0].get("url") if images and isinstance(images[0], dict) else None,
+            }
+
+        return self._collect_pages(
+            lambda lim, off: self.client.current_user_playlists(limit=lim, offset=off),
+            convert,
+            limit=limit,
+            max_items=max_playlists,
+            on_batch=on_batch,
+            should_cancel=should_cancel,
+        )
+
+    def _entry_converter(self, field: str) -> Callable[[Any], Optional[Dict[str, Any]]]:
+        """Build a converter for {added_at, <field>: track} entries.
+
+        @param field: Key holding the track object, "item" for playlists since Feb 2026 or "track" for liked songs.
+        """
+
+        def convert(entry: Any) -> Optional[Dict[str, Any]]:
+            if not isinstance(entry, dict):
+                return None
+            track_obj = entry.get(field)
+            if track_obj is None and field == "item":
+                track_obj = entry.get("track")
+            normalized = self._normalize_track(track_obj)
+            if normalized and entry.get("added_at"):
+                normalized["added_at"] = entry.get("added_at")
+            return normalized
+
+        return convert
 
     def load_playlist_tracks(
         self,
@@ -62,107 +161,49 @@ class SpotifyDataLoader:
         *,
         limit: int = 100,
         max_tracks: Optional[int] = None,
+        on_batch: Optional[Callable[[List[Dict[str, Any]], int], None]] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
     ) -> List[Dict[str, Any]]:
-        """Return playlist tracks as dicts suitable for HARMONI workflows.
+        """Return playlist tracks as dicts suitable for HARMONI workflows, keyed like Exportify CSV where possible.
 
-        Output dict keys align with Exportify CSV where possible.
-
-        max_tracks:
-          Optional safety cap to stop paging after N normalized tracks.
-        enrich_metadata:
-          If True, fetch audio features (BPM, key, energy) and genres for all tracks.
+        @param playlist_id: Spotify playlist id. Spotify only returns items for playlists the user owns or collaborates on.
+        @param limit: Page size.
+        @param max_tracks: Optional safety cap to stop paging after N normalized tracks.
+        @param on_batch: Optional callback given each page's normalized tracks and the total Spotify reports.
+        @param should_cancel: Optional callable checked before each page request.
         """
-
-        tracks: List[Dict[str, Any]] = []
-        offset = 0
-
-        while True:
-            if max_tracks is not None and len(tracks) >= int(max_tracks):
-                break
-
-            page = self.client.playlist_items(playlist_id, limit=limit, offset=offset)
-            items = page.get("items") or []
-
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                track_obj = item.get("item") or item.get("track")
-                normalized = self._normalize_track(track_obj)
-                if normalized:
-                    # preserve playlist-added timestamp if available
-                    if item.get("added_at"):
-                        normalized["added_at"] = item.get("added_at")
-                    tracks.append(normalized)
-
-                if max_tracks is not None and len(tracks) >= int(max_tracks):
-                    break
-
-            total = page.get("total")
-            if total is None:
-                break
-
-            offset += len(items)
-            if offset >= int(total):
-                break
-
-            if not items:
-                break
-
-        if max_tracks is not None and len(tracks) > int(max_tracks):
-            tracks = tracks[: int(max_tracks)]
-
-        return tracks
+        return self._collect_pages(
+            lambda lim, off: self.client.playlist_items(playlist_id, limit=lim, offset=off),
+            self._entry_converter("item"),
+            limit=limit,
+            max_items=max_tracks,
+            on_batch=on_batch,
+            should_cancel=should_cancel,
+        )
 
     def load_liked_songs(
         self,
         *,
         limit: int = 50,
         max_tracks: Optional[int] = None,
+        on_batch: Optional[Callable[[List[Dict[str, Any]], int], None]] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
     ) -> List[Dict[str, Any]]:
         """Return the user's saved tracks (Liked Songs).
 
-        max_tracks:
-          Optional safety cap to stop paging after N normalized tracks.
+        @param limit: Page size.
+        @param max_tracks: Optional safety cap to stop paging after N normalized tracks.
+        @param on_batch: Optional callback given each page's normalized tracks and the total Spotify reports.
+        @param should_cancel: Optional callable checked before each page request.
         """
-
-        tracks: List[Dict[str, Any]] = []
-        offset = 0
-
-        while True:
-            if max_tracks is not None and len(tracks) >= int(max_tracks):
-                break
-
-            page = self.client.current_user_saved_tracks(limit=limit, offset=offset)
-            items = page.get("items") or []
-
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                track_obj = item.get("item") or item.get("track")
-                normalized = self._normalize_track(track_obj)
-                if normalized:
-                    if item.get("added_at"):
-                        normalized["added_at"] = item.get("added_at")
-                    tracks.append(normalized)
-
-                if max_tracks is not None and len(tracks) >= int(max_tracks):
-                    break
-
-            total = page.get("total")
-            if total is None:
-                break
-
-            offset += len(items)
-            if offset >= int(total):
-                break
-
-            if not items:
-                break
-
-        if max_tracks is not None and len(tracks) > int(max_tracks):
-            tracks = tracks[: int(max_tracks)]
-
-        return tracks
+        return self._collect_pages(
+            lambda lim, off: self.client.current_user_saved_tracks(limit=lim, offset=off),
+            self._entry_converter("track"),
+            limit=limit,
+            max_items=max_tracks,
+            on_batch=on_batch,
+            should_cancel=should_cancel,
+        )
 
     def load_user_playlists_with_tracks(
         self,
@@ -171,12 +212,16 @@ class SpotifyDataLoader:
         playlist_limit: int = 50,
         track_limit: int = 100,
     ) -> List[Dict[str, Any]]:
-        """Load the current user's playlists and attach normalized track lists.
+        """Load the current user's readable playlists and attach normalized track lists.
 
         Returns a list compatible with load_playlists() output:
           [{"name": str, "tracks": [track_dict, ...]}, ...]
 
-        Optionally includes a pseudo-playlist "Liked Songs".
+        Playlists Spotify will not let the app read (not owned and not collaborative) are left out.
+
+        @param include_liked_songs: Prepend a pseudo-playlist "Liked Songs".
+        @param playlist_limit: Maximum number of playlists to load.
+        @param track_limit: Maximum number of tracks per playlist.
         """
 
         out: List[Dict[str, Any]] = []
@@ -192,14 +237,13 @@ class SpotifyDataLoader:
         for p in playlists:
             pid = (p.get("id") or "").strip() if isinstance(p, dict) else ""
             name = (p.get("name") or "").strip() if isinstance(p, dict) else ""
-            if not pid or not name:
+            if not pid or not name or not p.get("fetchable"):
                 continue
 
             tracks = self.load_playlist_tracks(
                 pid,
                 limit=min(100, int(track_limit)),
                 max_tracks=int(track_limit),
-                enrich_metadata=False,  # Batch export doesn't need enrichment
             )
             out.append({"name": name, "tracks": tracks})
 
