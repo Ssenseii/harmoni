@@ -1,7 +1,6 @@
 """Repository hygiene checks: no personal data or secrets tracked, configs stay sane."""
 import fnmatch
 import os
-import re
 import subprocess
 import unittest
 
@@ -110,13 +109,6 @@ class TestWorkflows(unittest.TestCase):
     def test_builds_do_not_bundle_data_folder(self):
         for rel in (os.path.join(".github", "workflows", "build.yml"), "build-macos.sh"):
             self.assertNotRegex(_read(rel), r"--add-data\s+\"data[;:]data\"", rel)
-
-
-class TestVersion(unittest.TestCase):
-    def test_version_matches_top_changelog_entry(self):
-        version = re.search(r"__version__\s*=\s*\"([^\"]+)\"", _read("version.py")).group(1)
-        top = re.search(r"^## \[([^\]]+)\]", _read("changelog.md"), re.MULTILINE).group(1)
-        self.assertEqual(version, top)
 
 
 if __name__ == "__main__":

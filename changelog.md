@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.2.1] - 2026-11-02
+## [Unreleased]
 
 ### Added
 - **Spotify setup guidance**: When Spotify is not configured, HARMONI now explains how to create a Spotify app and fill in the client ID and redirect URI, instead of silently switching to Exportify.
@@ -10,14 +10,14 @@ All notable changes to this project will be documented in this file.
 - **Example data files**: `data/tracks.example.json` and `data/playlists.example.json` show the expected formats.
 
 ### Fixed
-- **Spotify connection**: The automatic Exportify fallback is gone. Errors say what went wrong, the client is updated for the February 2026 Web API changes, and playlists you follow but do not own load correctly.
+- **Spotify connection**: The automatic Exportify fallback is gone. Errors say what went wrong, the client is updated for the February 2026 Web API changes, and playlists you follow but do not own are marked as unreadable through the API, with a pointer to Exportify, instead of failing when you open them.
 - **Downloads**: Cancel now stops the running download. The failed downloads list and resume work again. YouTube results are matched against the track duration so wrong versions are picked less often.
 - **Data files**: JSON data is written atomically, so a crash can no longer leave a half-written file. Data and config paths are anchored to the app folder, so they no longer depend on the folder you launch from.
 - **Startup**: The app starts faster and no longer flashes console windows on Windows.
 - **Release builds**: Personal data from `data/` is no longer bundled into the release binaries, and a tag build fails if `version.py` does not match the tag.
 
 ### Why
-- This release addresses Ssenseii/harmoni#42, #44, #45 and #46.
+- These changes address Ssenseii/harmoni#42, #44, #45 and #46.
 - A silent Exportify fallback hid the real Spotify error, so users could not tell what to fix.
 - Cancel, resume and the failed list are basic controls for long batch downloads, and they did not work reliably.
 - Personal playlists and download history were tracked in git and shipped inside release builds. They are now ignored, and CI scans for secrets so tokens cannot be committed again.
