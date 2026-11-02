@@ -1,0 +1,16 @@
+{
+  "tracks": [
+    {
+      "artist": "Example Artist",
+      "album": "Example Album",
+      "track": "First Example Song",
+      "uri": "spotify:track:0000000000000000000001"
+    },
+    {
+      "artist": "Another Example Artist",
+      "album": "Another Example Album",
+      "track": "Second Example Song",
+      "uri": "spotify:track:0000000000000000000002"
+    }
+  ]
+}

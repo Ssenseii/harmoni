@@ -9,6 +9,18 @@ Run HARMONI in Docker without installing Python or ffmpeg locally.
 
 ---
 
+## Before the first run
+
+Create `config.json` from the example:
+
+```bash
+cp config.json.example config.json
+```
+
+When a bind-mounted file is missing, Docker creates an empty directory in its place and HARMONI cannot read its config. Compose is set up to stop with an error instead, so create the file first.
+
+---
+
 ## Option A: Docker Compose (Recommended)
 
 ```bash
@@ -34,7 +46,7 @@ docker run --rm -it \
   -v "$(pwd)/data:/app/data" \
   -v "$(pwd)/music:/app/music" \
   -v "$(pwd)/export:/app/export" \
-  -v "$(pwd)/config.json:/app/config.json" \
+  --mount "type=bind,source=$(pwd)/config.json,target=/app/config.json" \
   -e TERM=xterm-256color \
   harmoni
 ```
@@ -50,7 +62,9 @@ The following directories are mounted as volumes to persist data:
 | `./data` | `/app/data` | Tracks, playlists, history, Exportify CSVs |
 | `./music` | `/app/music` | Downloaded audio files |
 | `./export` | `/app/export` | JSON exports |
-| `./config.json` | `/app/config.json` | Configuration settings |
+| `./config.json` | `/app/config.json` | Configuration settings (create it first) |
+
+`config.json`, your data JSON files and `export/` are left out of the image build by `.dockerignore`, so they only reach the container through these mounts.
 
 ---
 

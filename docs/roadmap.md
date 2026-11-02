@@ -85,7 +85,8 @@ Future features and improvements planned for HARMONI.
 
 ### **Developer & Maintenance Tools**
 
-* [ ] - Unit tests for main modules
+* [x] - Unit tests for main modules
+* [x] - CI/CD runs unit tests and gitleaks secret scanning
 * [ ] - CI/CD linting and formatting
 * [ ] - Command to reset app state
 * [ ] - Fast debug mode bypassing menus

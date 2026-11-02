@@ -36,7 +36,7 @@ See [Standalone Guide](standalone.md) for detailed instructions.
 
 ### Prerequisites
 
-- **Python 3.9+**
+- **Python 3.12+**
 - **ffmpeg** - Required for audio extraction/conversion
 - Internet connection
 
@@ -174,7 +174,7 @@ Or use the GUI:
 ### Expected Output
 
 ```
-✓ Python 3.9+
+✓ Python 3.12+
 ✓ yt-dlp installed
 ✓ ffmpeg found
 ✓ PySide6 installed (for GUI)

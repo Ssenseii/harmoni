@@ -7,17 +7,42 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  test:
+    name: Tests
+    uses: ./.github/workflows/test.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
+  check-version:
+    name: Check version matches tag
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare version.py with the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          expected="${GITHUB_REF_NAME#v}"
+          actual="$(python3 -c 'import version; print(version.__version__)')"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::version.py is $actual but the tag is $GITHUB_REF_NAME"
+            exit 1
+          fi
+
   # ─────────────────────────────────────────
   # Windows
   # ─────────────────────────────────────────
   build-windows:
     name: Build – Windows
+    needs: [test, check-version]
     runs-on: windows-latest
 
     steps:
@@ -78,7 +103,6 @@ jobs:
             --add-binary "bin/ffprobe.exe;bin" `
             --add-binary "bin/yt-dlp.exe;bin" `
             --add-data "config.json.example;." `
-            --add-data "data;data" `
             @qtExcludeArgs `
             gui_main.py
 
@@ -101,6 +125,7 @@ jobs:
   # ─────────────────────────────────────────
   build-macos:
     name: Build – macOS
+    needs: [test, check-version]
     runs-on: macos-latest
 
     steps:
@@ -162,7 +187,6 @@ jobs:
             --add-binary "bin/ffprobe:bin" \
             --add-binary "bin/yt-dlp:bin" \
             --add-data "config.json.example:." \
-            --add-data "data:data" \
             "${QT_EXCLUDE_ARGS[@]}" \
             gui_main.py
 
@@ -196,6 +220,7 @@ jobs:
   # ─────────────────────────────────────────
   build-linux:
     name: Build – Linux
+    needs: [test, check-version]
     runs-on: ubuntu-latest
 
     steps:
@@ -247,7 +272,6 @@ jobs:
             --add-binary "bin/ffprobe:bin" \
             --add-binary "bin/yt-dlp:bin" \
             --add-data "config.json.example:." \
-            --add-data "data:data" \
             "${QT_EXCLUDE_ARGS[@]}" \
             gui_main.py
 
@@ -273,6 +297,8 @@ jobs:
     needs: [build-windows, build-macos, build-linux]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Download all artifacts

@@ -22,4 +22,9 @@ services:
       - ./data:/app/data
       - ./music:/app/music
       - ./export:/app/export
-      - ./config.json:/app/config.json
+      # Without create_host_path: false, a missing config.json becomes an empty directory.
+      - type: bind
+        source: ./config.json
+        target: /app/config.json
+        bind:
+          create_host_path: false

@@ -1,0 +1,34 @@
+{
+  "playlists": [
+    {
+      "name": "Example Playlist",
+      "lastModifiedDate": "2026-01-01",
+      "items": [
+        {
+          "track": {
+            "trackName": "First Example Song",
+            "artistName": "Example Artist",
+            "albumName": "Example Album",
+            "trackUri": "spotify:track:0000000000000000000001"
+          },
+          "episode": null,
+          "audiobook": null,
+          "localTrack": null,
+          "addedDate": "2026-01-01"
+        },
+        {
+          "track": {
+            "trackName": "Second Example Song",
+            "artistName": "Another Example Artist",
+            "albumName": "Another Example Album",
+            "trackUri": "spotify:track:0000000000000000000002"
+          },
+          "episode": null,
+          "audiobook": null,
+          "localTrack": null,
+          "addedDate": "2026-01-01"
+        }
+      ]
+    }
+  ]
+}

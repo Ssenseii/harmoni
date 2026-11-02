@@ -23,12 +23,10 @@ import unittest
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(THIS_DIR)
 SPEC_PATH = os.path.join(PROJECT_ROOT, "HARMONI.spec")
+BUILD_WORKFLOW_PATH = os.path.join(PROJECT_ROOT, ".github", "workflows", "build.yml")
 
 # Directories we don't ship / don't need to validate.
 SKIP_DIR_PARTS = {".git", "__pycache__", "node_modules", "venv", ".venv", "build", "dist"}
-# Modules known to be dead/unused (pre-existing, unrelated to PySide6 packaging)
-# and therefore excluded from the "every module must import cleanly" check.
-KNOWN_BROKEN_MODULES = {"menus.library_menu"}
 
 
 def _load_excluded_modules():
@@ -42,6 +40,21 @@ def _load_excluded_modules():
     excluded = ast.literal_eval("[" + match.group(1) + "]")
     assert excluded, "HARMONI.spec excludes list is empty; nothing to guard against"
     return excluded
+
+
+def _load_workflow_exclude_lists():
+    """Return each PySide6 exclude list in build.yml, keyed by "windows" or "bash-<index>"."""
+    with open(BUILD_WORKFLOW_PATH, "r", encoding="utf-8") as f:
+        src = f.read()
+
+    lists = {}
+    pwsh = re.search(r"\$qtUnused\s*=\s*@\((.*?)\)", src, re.DOTALL)
+    assert pwsh, "Could not find $qtUnused = @(...) in build.yml"
+    lists["windows"] = {"PySide6." + m for m in re.findall(r"'([^']+)'", pwsh.group(1))}
+
+    for i, names in enumerate(re.findall(r'QT_UNUSED="([^"]*)"', src)):
+        lists[f"bash-{i}"] = {"PySide6." + m for m in names.split()}
+    return lists
 
 
 def _iter_project_py_files():
@@ -68,6 +81,13 @@ def _iter_project_modules():
 class TestNoSourceImportsExcludedPySide6Modules(unittest.TestCase):
     def test_excludes_list_is_not_empty(self):
         self.assertGreater(len(_load_excluded_modules()), 10)
+
+    def test_build_workflow_exclude_lists_match_spec(self):
+        spec = set(_load_excluded_modules())
+        lists = _load_workflow_exclude_lists()
+        self.assertEqual(sorted(lists), ["bash-0", "bash-1", "windows"])
+        for name, modules in lists.items():
+            self.assertEqual(modules, spec, f"build.yml {name} exclude list differs from HARMONI.spec")
 
     def test_no_file_imports_an_excluded_submodule(self):
         excluded = set(_load_excluded_modules())
@@ -104,7 +124,7 @@ class TestAppImportsWithoutExcludedModules(unittest.TestCase):
 
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-        module_names = sorted(set(_iter_project_modules()) - KNOWN_BROKEN_MODULES)
+        module_names = sorted(set(_iter_project_modules()))
         # Drop cached copies so imports actually re-execute under the blocked
         # __import__, instead of returning an already-imported module untouched.
         prior_modules = {

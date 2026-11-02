@@ -29,6 +29,8 @@ config.json
 data/exportify/*
 !data/exportify/exportify_test_playlist.csv
 data/spotify_tokens.json
+data/*.json
+!data/*.example.json
 export/
 
 # IDE

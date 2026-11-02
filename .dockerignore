@@ -46,6 +46,11 @@ app.log
 music/
 export/
 
+# Local config, tokens and personal data
+config.json
+data/*.json
+!data/*.example.json
+
 # Development files
 todo.md
 changelog.md
