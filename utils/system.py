@@ -1,3 +1,6 @@
+import subprocess
+import sys
+
 import psutil
 from utils.logger import log_info, log_warning
 
@@ -17,3 +20,10 @@ def system_check():
             log_warning("Low disk space available.")
     except Exception as e:
         log_warning(f"System check failed: {e}")
+
+
+def hidden_subprocess_kwargs() -> dict:
+    """Return subprocess keyword arguments that stop a console window from opening on Windows."""
+    if sys.platform == "win32":
+        return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
+    return {}

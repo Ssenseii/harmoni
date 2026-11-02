@@ -1,3 +1,16 @@
+import os
+import sys
+
+
+def _app_dir() -> str:
+    """Return the exe folder when frozen, otherwise the folder holding this file."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+APP_DIR = _app_dir()
+
 PYTHON_DEPENDENCIES = [
     "psutil",
     "colorama",
@@ -26,6 +39,6 @@ AUDIO_BITRATE_OPTIONS = {
 
 # Files
 
-FAILED_FILE = "data/failed_downloads.json"
-PROGRESS_FILE = "data/download_progress.json"
-LOG_FILE = "app.log"
+FAILED_FILE = os.path.join(APP_DIR, "data", "failed_downloads.json")
+PROGRESS_FILE = os.path.join(APP_DIR, "data", "download_progress.json")
+LOG_FILE = os.path.join(APP_DIR, "app.log")

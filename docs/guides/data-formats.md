@@ -2,6 +2,8 @@
 
 This document describes the JSON and CSV formats used by HARMONI.
 
+A fresh clone has no `data/tracks.json` or `data/playlists.json`, because they hold personal data and are not tracked. HARMONI treats a missing file as an empty list. To start one, copy `data/tracks.example.json` to `data/tracks.json` or `data/playlists.example.json` to `data/playlists.json` and edit it.
+
 ---
 
 ## Track List Format
@@ -56,7 +58,7 @@ This document describes the JSON and CSV formats used by HARMONI.
 }
 ```
 
-This format matches the official Spotify data export structure.
+This format matches the official Spotify data export structure. A playlist may instead hold a `tracks` list in the flat track list format above.
 
 ---
 
