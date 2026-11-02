@@ -5,7 +5,9 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- **Spotify setup guidance**: When Spotify is not configured, HARMONI now explains how to create a Spotify app and fill in the client ID and redirect URI, instead of silently switching to Exportify.
+- **Spotify setup guidance**: When Spotify is not configured, a step-by-step guide opens the Spotify dashboard, lets you copy the redirect URI, and takes you to the Client ID field, instead of silently switching to Exportify.
+- **Sidebar quick actions**: Start Downloads, Retry Failed and Open Music Folder are always one click away, with queue counts.
+- **Failure reasons**: Failed downloads show why they failed in the queue, including when a track is age-restricted and needs browser cookies.
 - **CI tests and secret scanning**: Every push and pull request runs the unit tests and a gitleaks scan, and release builds only start when both pass. A gitleaks pre-commit hook is included.
 - **Example data files**: `data/tracks.example.json` and `data/playlists.example.json` show the expected formats.
 
@@ -14,6 +16,7 @@ All notable changes to this project will be documented in this file.
 - **Downloads**: Cancel now stops the running download. The failed downloads list and resume work again. YouTube results are matched against the track duration so wrong versions are picked less often.
 - **Data files**: JSON data is written atomically, so a crash can no longer leave a half-written file. Data and config paths are anchored to the app folder, so they no longer depend on the folder you launch from.
 - **Startup**: The app starts faster and no longer flashes console windows on Windows.
+- **Spotify and queue UI**: Playlists open with a single click, adding tracks says that downloads wait for Start Downloads, and selected rows no longer show Windows 11 accent bars.
 - **Release builds**: Personal data from `data/` is no longer bundled into the release binaries, and a tag build fails if `version.py` does not match the tag.
 
 ### Why
