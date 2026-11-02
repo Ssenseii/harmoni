@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 
+from gui.notices import notify
 from gui.workers.download_queue import DownloadQueue, DownloadStatus
 from gui.workers.download_worker import DownloadWorker
 
@@ -336,24 +337,19 @@ class DownloadsView(QWidget):
 
     def _on_queue_completed(self, success: int, failed: int):
         if failed > 0:
-            QMessageBox.information(
-                self,
-                "Downloads Complete",
-                f"Downloaded {success} tracks successfully.\n{failed} tracks failed."
+            notify(
+                f"Downloaded {success} tracks. {failed} failed, see Details for why.",
+                "warning", "Retry Failed", self._retry_failed,
             )
         elif success > 0:
-            QMessageBox.information(
-                self,
-                "Downloads Complete",
-                f"Successfully downloaded {success} tracks!"
-            )
+            notify(f"Downloaded {success} tracks.", "success")
 
     def _start_downloads(self):
         if self.worker is not None:
             return
 
         if not self.queue.has_pending():
-            QMessageBox.information(self, "No Downloads", "No tracks in queue to download.")
+            notify("Nothing to download yet. Add tracks from Spotify or YouTube first.")
             return
 
         worker = DownloadWorker(self.queue, self.config, parent=self)

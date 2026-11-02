@@ -10,12 +10,10 @@ ROOT_DIR = os.path.dirname(THIS_DIR)
 if ROOT_DIR not in os.sys.path:
     os.sys.path.insert(0, ROOT_DIR)
 
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
 APP = QApplication.instance() or QApplication([])
 
-from gui.styles import COLORS
 from gui.views import spotify_view as spotify_view_module
 from gui.views.spotify_view import NOT_FETCHABLE_TOOLTIP, SpotifyView
 from gui.workers.spotify_worker import SpotifyWorker
@@ -25,6 +23,37 @@ from spotify_api.token_manager import TokenInfo
 import menus.downloads_menu as downloads_menu
 
 ME_ID = "me123"
+
+
+class _Signal:
+    """Minimal stand-in for a Qt signal that calls its slots straight away."""
+
+    def __init__(self):
+        self.slots = []
+
+    def connect(self, slot):
+        self.slots.append(slot)
+
+    def emit(self, *args):
+        for slot in self.slots:
+            slot(*args)
+
+
+class _SyncThread:
+    """Runs a FunctionThread's callable synchronously on start()."""
+
+    def __init__(self, fn):
+        self.fn = fn
+        self.succeeded = _Signal()
+        self.failed = _Signal()
+
+    def start(self):
+        try:
+            result = self.fn()
+        except Exception as e:
+            self.failed.emit(e)
+        else:
+            self.succeeded.emit(result)
 
 
 def _track(idx):
@@ -280,27 +309,26 @@ class TestSpotifyView(unittest.TestCase):
         self.followed = {"id": "followed", "name": "Followed", "tracks_total": 5, "fetchable": False}
         self.view._on_playlists_loaded([self.owned, self.followed])
 
-    def test_unfetchable_is_greyed_with_tooltip(self):
-        item = self.view.playlist_list.item(1)
-        self.assertEqual(item.toolTip(), NOT_FETCHABLE_TOOLTIP)
-        self.assertEqual(item.foreground().color(), QColor(COLORS["text_muted"]))
+    def test_followed_playlist_has_explaining_tooltip(self):
+        self.assertEqual(self.view.playlist_list.item(1).toolTip(), NOT_FETCHABLE_TOOLTIP)
         self.assertEqual(self.view.playlist_list.item(0).toolTip(), "")
 
-    def test_unfetchable_double_click_starts_no_fetch(self):
+    def test_followed_playlist_loads_from_public_page(self):
+        tracks = [{"artist": "A", "track": "T"}]
         with mock.patch.object(spotify_view_module, "SpotifyWorker") as worker_cls, \
-             mock.patch.object(spotify_view_module.QMessageBox, "information") as info:
+             mock.patch.object(spotify_view_module, "FunctionThread", _SyncThread), \
+             mock.patch.object(spotify_view_module, "fetch_public_tracks", return_value=("Followed", tracks)) as fetch:
             self.view._on_playlist_selected(self.view.playlist_list.item(1))
         worker_cls.assert_not_called()
-        info.assert_called_once()
+        fetch.assert_called_once_with("playlist", "followed")
+        self.assertEqual(self.view.tracks_table.rowCount(), 1)
 
-    def test_download_queue_skips_unfetchable(self):
+    def test_download_queue_keeps_followed_playlists(self):
         self.view.playlist_list.selectAll()
-        with mock.patch.object(spotify_view_module, "SpotifyWorker") as worker_cls, \
-             mock.patch.object(spotify_view_module.QMessageBox, "information") as info:
+        with mock.patch.object(spotify_view_module, "SpotifyWorker") as worker_cls:
             self.view._download_selected_playlists()
         worker_cls.return_value.fetch_playlist_tracks.assert_called_once_with("owned", "Owned")
-        self.assertEqual(self.view._download_queue_playlists, [])
-        self.assertIn("1 playlist", info.call_args[0][2])
+        self.assertEqual(self.view._download_queue_playlists, [self.followed])
 
     def test_workers_share_the_view_client(self):
         with mock.patch.object(spotify_view_module, "SpotifyWorker") as worker_cls:
@@ -335,9 +363,9 @@ class TestSpotifyView(unittest.TestCase):
         self.view.worker = worker
         self.view._download_fetch_worker = worker
         self.view._download_queue_playlists = [self.owned, self.owned]
-        with mock.patch.object(spotify_view_module.QMessageBox, "information") as info:
+        with mock.patch.object(spotify_view_module, "notify") as notice:
             self.view._stop_worker()
-        self.assertIn("3 playlist", info.call_args[0][2])
+        self.assertIn("3 playlist", notice.call_args[0][0])
         self.assertEqual(self.view._download_queue_playlists, [])
 
     def test_stop_worker_twice_waits_and_retires_once(self):

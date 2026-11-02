@@ -188,11 +188,11 @@ class TestSpotifyViewErrors(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_network_error_keeps_user_connected(self):
-        with mock.patch.object(spotify_view_module.QMessageBox, "warning") as warning, \
+        with mock.patch.object(spotify_view_module, "notify") as notice, \
              mock.patch.object(self.view, "_prompt_reconnect") as reconnect:
             self.view._on_error(NETWORK_ERROR_STATUS, "Spotify token request failed: offline")
         reconnect.assert_not_called()
-        warning.assert_called_once()
+        self.assertEqual(notice.call_args[0][1], "warning")
         self.assertEqual(self.view.status_label.text(), "Connected")
 
     def test_403_shows_guidance_and_stays_connected(self):

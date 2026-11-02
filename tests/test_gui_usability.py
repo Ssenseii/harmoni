@@ -18,11 +18,27 @@ from PySide6.QtWidgets import QApplication, QDialog, QLineEdit, QPushButton
 app = QApplication.instance() or QApplication([])
 
 from config import DEFAULT_CONFIG
-from gui.dialogs import oauth_dialog, queued_notice
+from gui import notices
+from gui.dialogs import oauth_dialog
 from gui.views import spotify_view as spotify_view_module
 from gui.views import youtube_view as youtube_view_module
 from gui.views.downloads_view import DownloadsView
 from gui.workers.download_queue import DownloadQueue, DownloadStatus
+
+
+def capture_notices(test):
+    """Record every notice posted during a test as (text, kind, action_label, action).
+
+    @param test: Test case that owns the cleanup.
+    """
+    seen = []
+
+    def record(*notice):
+        seen.append(notice)
+
+    notices.hub.posted.connect(record)
+    test.addCleanup(notices.hub.posted.disconnect, record)
+    return seen
 
 
 def _spotify_view(test, queue=None):
@@ -67,28 +83,47 @@ class TestPlaylistClick(unittest.TestCase):
 
 
 class TestQueuedNotice(unittest.TestCase):
-    def test_says_downloads_need_start(self):
-        self.assertIn("Start Downloads", queued_notice.QUEUED_HINT)
+    def _assert_queued_notice(self, seen, opened):
+        """Check the notice says downloads wait for Start and its button opens Downloads.
 
-    def test_spotify_add_offers_downloads(self):
+        @param seen: Notices captured during the test.
+        @param opened: Views the view asked to navigate to.
+        """
+        [(text, kind, label, action)] = seen
+        self.assertIn(notices.QUEUED_HINT, text)
+        self.assertEqual((kind, label), ("success", "Go to Downloads"))
+        action()
+        self.assertEqual(opened, ["downloads"])
+
+    def test_spotify_add_posts_notice_without_blocking(self):
         view = _spotify_view(self)
         view.current_tracks = [{"artist": "X", "track": "Y"}]
         opened = []
         view.navigate_to.connect(opened.append)
-        with mock.patch.object(spotify_view_module.queued_notice, "confirm_queued", return_value=True) as confirm:
-            view._add_single_to_queue(0)
-        confirm.assert_called_once()
-        self.assertEqual(opened, ["downloads"])
+        seen = capture_notices(self)
+        view._add_single_to_queue(0)
+        self._assert_queued_notice(seen, opened)
 
-    def test_youtube_add_offers_downloads(self):
+    def test_youtube_add_posts_notice_without_blocking(self):
         view = youtube_view_module.YouTubeView({}, DownloadQueue())
         self.addCleanup(view.deleteLater)
         opened = []
         view.navigate_to.connect(opened.append)
+        seen = capture_notices(self)
         view.url_input.setText("Artist - Song")
-        with mock.patch.object(youtube_view_module, "confirm_queued", return_value=True):
-            view._add_single_to_queue()
-        self.assertEqual(opened, ["downloads"])
+        view._add_single_to_queue()
+        self._assert_queued_notice(seen, opened)
+
+    def test_download_complete_offers_retry(self):
+        view = DownloadsView({}, DownloadQueue())
+        self.addCleanup(view.deleteLater)
+        seen = capture_notices(self)
+        with mock.patch.object(view, "_retry_failed") as retry:
+            view._on_queue_completed(2, 1)
+            [(text, kind, label, action)] = seen
+            action()
+        self.assertEqual((kind, label), ("warning", "Retry Failed"))
+        retry.assert_called_once()
 
 
 class TestDownloadsDetails(unittest.TestCase):
@@ -169,6 +204,59 @@ class TestSidebarQuickActions(unittest.TestCase):
             self.window._navigate_to_view("spotify_settings")
         focus.assert_called_once()
         self.assertIs(self.window.view_stack.currentWidget(), self.window.settings_view)
+
+
+class TestNoticeBar(unittest.TestCase):
+    def setUp(self):
+        from gui.main_window import MainWindow
+
+        with mock.patch("gui.main_window.AppUpdateCheckWorker.start"), \
+             mock.patch("gui.views.spotify_view.SpotifyPKCEAuth.load_cached_token", return_value=None):
+            self.window = MainWindow(dict(DEFAULT_CONFIG))
+        self.addCleanup(self.window.deleteLater)
+
+    def test_notice_shows_and_runs_action(self):
+        clicked = []
+        notices.notify("Added 3 tracks.", "success", "Go to Downloads", lambda: clicked.append(True))
+        self.assertFalse(self.window.notice_bar.isHidden())
+        self.assertEqual(self.window.notice_label.text(), "Added 3 tracks.")
+        self.window.notice_action_btn.click()
+        self.assertEqual(clicked, [True])
+        self.assertTrue(self.window.notice_bar.isHidden())
+
+    def test_notice_without_action_hides_button_and_times_out(self):
+        notices.notify("Settings saved.", "success")
+        self.assertTrue(self.window.notice_action_btn.isHidden())
+        self.assertTrue(self.window._notice_timer.isActive())
+        self.window._notice_timer.timeout.emit()
+        self.assertTrue(self.window.notice_bar.isHidden())
+
+
+class TestSettingsScrolling(unittest.TestCase):
+    def test_combo_ignores_wheel_until_focused(self):
+        from PySide6.QtCore import QPoint, QPointF
+        from PySide6.QtGui import QWheelEvent
+        from gui.views.settings_view import ScrollSafeComboBox
+
+        combo = ScrollSafeComboBox()
+        self.addCleanup(combo.deleteLater)
+        combo.addItems(["mp3", "flac", "m4a"])
+        event = QWheelEvent(QPointF(5, 5), QPointF(5, 5), QPoint(0, 0), QPoint(0, -120),
+                            Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+        combo.wheelEvent(event)
+        self.assertEqual(combo.currentIndex(), 0)
+        self.assertFalse(event.isAccepted())
+
+    def test_save_bar_sits_outside_the_scroll_area(self):
+        from PySide6.QtWidgets import QPushButton, QScrollArea
+        from gui.views.settings_view import SettingsView
+
+        with mock.patch("gui.views.settings_view.YtdlpStatusWorker"):
+            view = SettingsView(dict(DEFAULT_CONFIG))
+        self.addCleanup(view.deleteLater)
+        scroll = view.findChild(QScrollArea)
+        save = next(b for b in view.findChildren(QPushButton) if b.text() == "Save Settings")
+        self.assertFalse(scroll.isAncestorOf(save))
 
 
 class TestStatusBar(unittest.TestCase):

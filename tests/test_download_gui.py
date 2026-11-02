@@ -282,18 +282,18 @@ class TestDownloadsView(unittest.TestCase):
 
     def test_one_completion_message_with_counts_for_this_run(self):
         self.queue.add_track("Artist A", "Song One")
-        with mock.patch(RUN_DOWNLOAD, return_value=SUCCESS):
+        with mock.patch(RUN_DOWNLOAD, return_value=SUCCESS), \
+             mock.patch("gui.views.downloads_view.notify") as notice:
             self.view._start_downloads()
             self._finish_worker()
-            self.assertEqual(self.messagebox.information.call_count, 1)
+            self.assertEqual(notice.call_count, 1)
 
             self.queue.add_track("Artist B", "Song Two")
             self.view._start_downloads()
             self._finish_worker()
 
-        self.assertEqual(self.messagebox.information.call_count, 2)
-        second_text = self.messagebox.information.call_args[0][2]
-        self.assertIn("downloaded 1 tracks", second_text)
+        self.assertEqual(notice.call_count, 2)
+        self.assertIn("Downloaded 1 tracks", notice.call_args[0][0])
 
     def test_ffmpeg_missing_reenables_start(self):
         self.queue.add_track("Artist A", "Song One")

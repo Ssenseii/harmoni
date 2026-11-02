@@ -26,8 +26,7 @@ class TestSpotifySingleAdd(unittest.TestCase):
         self.addCleanup(view.deleteLater)
         track = {"artist": "A", "track": "T", "album": "Al", "duration_ms": 200000}
         view.current_tracks = [track]
-        with mock.patch.object(spotify_view_module.queued_notice, "confirm_queued", return_value=False):
-            view._add_single_to_queue(0)
+        view._add_single_to_queue(0)
         self.assertIs(queue.add_track.call_args.kwargs.get("track_data"), track)
 
 

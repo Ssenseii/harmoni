@@ -7,9 +7,11 @@ from PySide6.QtWidgets import (
 )
 import os
 
-from PySide6.QtCore import Qt, QSize, QPoint, QUrl
+from PySide6.QtCore import Qt, QSize, QPoint, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QIcon, QMouseEvent
 
+from gui import notices
+from gui.styles import COLORS
 from gui.views.welcome_view import WelcomeView
 from gui.views.spotify_view import SpotifyView
 from gui.views.youtube_view import YouTubeView
@@ -217,6 +219,8 @@ class MainWindow(QMainWindow):
         # Update banner (hidden until a newer release is found)
         self.update_banner = self._create_update_banner()
         main_v_layout.addWidget(self.update_banner)
+        self.notice_bar = self._create_notice_bar()
+        main_v_layout.addWidget(self.notice_bar)
 
         # Content container
         content_widget = QWidget()
@@ -285,6 +289,64 @@ class MainWindow(QMainWindow):
         self._app_update_text = ""
         self._ytdlp_update_text = ""
         return banner
+
+    def _create_notice_bar(self) -> QFrame:
+        """Create the bar that shows non-blocking notices from the views, laid out like the update banner."""
+        bar = QFrame()
+        bar.setObjectName("noticeBar")
+        bar.setVisible(False)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(16, 8, 12, 8)
+        layout.setSpacing(12)
+
+        self.notice_label = QLabel()
+        self.notice_label.setWordWrap(True)
+        layout.addWidget(self.notice_label, 1)
+
+        self.notice_action_btn = QPushButton()
+        self.notice_action_btn.setObjectName("ghost")
+        self.notice_action_btn.setStyleSheet("color: white; border-color: white;")
+        self.notice_action_btn.clicked.connect(self._run_notice_action)
+        layout.addWidget(self.notice_action_btn)
+
+        dismiss_btn = QPushButton("Dismiss")
+        dismiss_btn.setObjectName("ghost")
+        dismiss_btn.setStyleSheet("color: white; border-color: white;")
+        dismiss_btn.clicked.connect(lambda: bar.setVisible(False))
+        layout.addWidget(dismiss_btn)
+
+        self._notice_action = None
+        self._notice_timer = QTimer(self)
+        self._notice_timer.setSingleShot(True)
+        self._notice_timer.timeout.connect(lambda: bar.setVisible(False))
+        notices.hub.posted.connect(self._show_notice)
+        return bar
+
+    def _show_notice(self, text: str, kind: str, action_label: str, action):
+        """Show a notice, replacing any current one, and hide it after a few seconds.
+
+        @param text: Message to show.
+        @param kind: "info", "success" or "warning".
+        @param action_label: Button text, or "" for no button.
+        @param action: Callable run by the button.
+        """
+        colors = {"success": "#2f7d4f", "warning": COLORS["warning"], "info": COLORS["accent_pressed"]}
+        self.notice_bar.setStyleSheet(
+            f"#noticeBar {{ background-color: {colors.get(kind, colors['info'])}; }}"
+            "#noticeBar QLabel { color: white; font-size: 12px; }"
+        )
+        self.notice_label.setText(text)
+        self._notice_action = action
+        self.notice_action_btn.setText(action_label)
+        self.notice_action_btn.setVisible(bool(action_label and action))
+        self.notice_bar.setVisible(True)
+        self._notice_timer.start(10000 if kind == "warning" else 6000)
+
+    def _run_notice_action(self):
+        """Run the current notice's action and close the bar."""
+        self.notice_bar.setVisible(False)
+        if self._notice_action:
+            self._notice_action()
 
     def _check_for_app_update(self):
         """Kick off a background check for a newer HARMONI release."""

@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 
-from gui.dialogs.queued_notice import confirm_queued
+from gui.notices import QUEUED_HINT, notify
 from gui.workers.download_queue import DownloadQueue
 
 
@@ -156,23 +156,29 @@ class YouTubeView(QWidget):
         """Add single URL/search to queue."""
         query = self.url_input.text().strip()
         if not query:
-            QMessageBox.warning(self, "Empty Input", "Please enter a URL or search query.")
+            notify("Enter a YouTube link or 'Artist - Song' first.")
             return
 
         artist, track = self._parse_query(query)
         if artist and track:
             self.queue.add_track(artist, track)
             self.url_input.clear()
-            if confirm_queued(self, f"Added '{artist} - {track}' to the download queue."):
-                self.navigate_to.emit("downloads")
+            self._notify_queued(f"Added '{artist} - {track}' to the download queue.")
         else:
-            QMessageBox.warning(self, "Invalid Input", "Could not parse the input.")
+            notify("Couldn't read that. Use a YouTube link or 'Artist - Song'.", "warning")
+
+    def _notify_queued(self, text: str):
+        """Say tracks were queued, that they wait for Start Downloads, and offer to open Downloads.
+
+        @param text: What was added.
+        """
+        notify(f"{text} {QUEUED_HINT}", "success", "Go to Downloads", lambda: self.navigate_to.emit("downloads"))
 
     def _add_batch_to_queue(self):
         """Add batch queries to queue."""
         text = self.batch_input.toPlainText().strip()
         if not text:
-            QMessageBox.warning(self, "Empty Input", "Please enter some search queries.")
+            notify("Enter one 'Artist - Song' per line first.")
             return
 
         lines = text.split("\n")
@@ -195,11 +201,10 @@ class YouTubeView(QWidget):
             self.batch_input.clear()
             message = f"Added {added} tracks to the download queue."
             if skipped > 0:
-                message += f"\n{skipped} lines were skipped (empty or invalid)."
-            if confirm_queued(self, message):
-                self.navigate_to.emit("downloads")
+                message += f" Skipped {skipped} lines that weren't 'Artist - Song'."
+            self._notify_queued(message)
         else:
-            QMessageBox.warning(self, "No Tracks Added", "No valid tracks found in the input.")
+            notify("No 'Artist - Song' lines found.", "warning")
 
     def _clear_batch(self):
         """Clear batch input."""

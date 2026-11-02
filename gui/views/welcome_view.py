@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 
+from gui.notices import QUEUED_HINT, notify
 from gui.workers.download_queue import DownloadQueue
 from utils.loaders import parse_exportify_csv_for_queue
 
@@ -490,38 +491,15 @@ class WelcomeView(QWidget):
                 if tracks:
                     total_tracks.extend(tracks)
             except Exception as e:
-                QMessageBox.warning(
-                    self,
-                    "Import Error",
-                    f"Failed to parse {os.path.basename(file_path)}:\n{str(e)}"
-                )
+                notify(f"Couldn't read {os.path.basename(file_path)}: {e}", "warning")
 
         if not total_tracks:
-            QMessageBox.information(
-                self,
-                "No Tracks Found",
-                "No valid tracks were found in the dropped files.\n\n"
-                "Make sure you're using a CSV file exported from Exportify."
-            )
+            notify("No tracks found in those files. Use a CSV exported from Exportify.", "warning")
             return
 
-        reply = QMessageBox.question(
-            self,
-            "Import Tracks",
-            f"Found {len(total_tracks)} tracks.\n\nAdd them to the download queue?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes
-        )
-
-        if reply == QMessageBox.Yes:
-            self._add_tracks_to_queue(total_tracks)
-            QMessageBox.information(
-                self,
-                "Import Complete",
-                f"Added {len(total_tracks)} tracks to the queue.\n\n"
-                "Go to Downloads to start downloading."
-            )
-            self.navigate_to.emit("downloads")
+        self._add_tracks_to_queue(total_tracks)
+        notify(f"Added {len(total_tracks)} tracks to the download queue. {QUEUED_HINT}", "success")
+        self.navigate_to.emit("downloads")
 
     def _parse_exportify_csv(self, file_path: str) -> list:
         return parse_exportify_csv_for_queue(file_path)
