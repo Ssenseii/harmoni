@@ -2,12 +2,15 @@
 
 import math
 import os
+import re
+import shutil
 import subprocess
 import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from utils.logger import log_warning
 from utils.system import hidden_subprocess_kwargs
 from utils.ytdlp_args import build_extra_ytdlp_args
 
@@ -76,18 +79,118 @@ def _ffmpeg_location() -> Optional[str]:
         return None
 
 
-def build_search_command(track: dict, output_dir: str, audio_format: str, config: Optional[dict]) -> list[str]:
+COOKIE_FLAGS = ("--cookies", "--cookies-from-browser")
+RETRY_PLAYER_CLIENTS = "youtube:player_client=tv,web_safari,android"
+MIN_NODE_MAJOR = 20
+
+
+def _uses_cookies(args: list[str]) -> bool:
+    """Return whether the extra yt-dlp args sign in with cookies.
+
+    @param args: Extra yt-dlp arguments.
+    """
+    return any(a in COOKIE_FLAGS or a.startswith(tuple(f + "=" for f in COOKIE_FLAGS)) for a in args)
+
+
+def _without_cookies(args: list[str]) -> list[str]:
+    """Return the extra args with every cookie flag and its value removed.
+
+    @param args: Extra yt-dlp arguments.
+    """
+    out, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in COOKIE_FLAGS:
+            skip = True
+        elif not a.startswith(tuple(f + "=" for f in COOKIE_FLAGS)):
+            out.append(a)
+    return out
+
+
+def _node_is_supported(path: str) -> bool:
+    """Return whether the Node.js at path is new enough for yt-dlp's YouTube challenge solver.
+
+    @param path: Path to the node executable.
+    """
+    try:
+        out = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=10, **hidden_subprocess_kwargs())
+        return int(out.stdout.strip().lstrip("v").split(".")[0]) >= MIN_NODE_MAJOR
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
+def find_js_runtime() -> Optional[tuple[str, str]]:
+    """Return (name, path) of a JavaScript runtime yt-dlp can use for signed-in YouTube downloads, or None."""
+    exe = ".exe" if os.name == "nt" else ""
+    home = os.path.expanduser("~")
+    places = {
+        "deno": [shutil.which("deno"), os.path.join(home, ".deno", "bin", "deno" + exe)],
+        "node": [
+            shutil.which("node"),
+            os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "nodejs", "node.exe"),
+            "/opt/homebrew/bin/node",
+            "/usr/local/bin/node",
+        ],
+    }
+    for name, candidates in places.items():
+        for path in candidates:
+            if path and os.path.isfile(path) and (name == "deno" or _node_is_supported(path)):
+                return name, path
+    return None
+
+
+def resolve_extra_args(config: dict) -> list[str]:
+    """Return the user's extra yt-dlp args, adding a JS runtime when cookies are used.
+
+    Signed-in YouTube requests need a JavaScript runtime. Without one every download fails, so cookies are
+    dropped when no runtime is installed.
+
+    @param config: App config, read for ytdlp_extra_args and ffmpeg_extra_args.
+    """
+    args = build_extra_ytdlp_args(config)
+    if not _uses_cookies(args) or "--js-runtimes" in args:
+        return args
+    runtime = find_js_runtime()
+    if runtime is None:
+        log_warning(f"yt-dlp cookies ignored: {NO_JS_RUNTIME_MESSAGE}")
+        return _without_cookies(args)
+    name, path = runtime
+    return args + ["--js-runtimes", f"{name}:{path}"]
+
+
+def _simplified_title(title: str) -> str:
+    """Return the title without bracketed qualifiers or a " - Remastered" style suffix, for a looser retry search.
+
+    @param title: Track title from Spotify.
+    """
+    core = title.split(" - ", 1)[0]
+    core = re.sub(r"[\(\[\{][^\)\]\}]*[\)\]\}]", " ", core)
+    return re.sub(r"\s+", " ", core).strip()
+
+
+def build_search_command(
+    track: dict,
+    output_dir: str,
+    audio_format: str,
+    config: Optional[dict],
+    *,
+    title: Optional[str] = None,
+    extra_args: Optional[list[str]] = None,
+) -> list[str]:
     """Return the yt-dlp argv that searches YouTube for a track and saves it as audio.
 
     @param track: Track dict with artist, track and optionally duration_ms.
     @param output_dir: Folder the audio file is written to.
     @param audio_format: Target audio format such as mp3 or flac.
     @param config: App config, read for ytdlp_path, match_duration_tolerance and extra args.
+    @param title: Title to search for instead of the track's own, for a retry with a simpler query.
+    @param extra_args: Extra yt-dlp args to use instead of reading them from config.
     """
     config = config or {}
-    artist, title = _track_names(track)
-    query = f"{artist} - {title}"
-    output = os.path.join(output_dir, f"{get_base_filename(artist, title)}.%(ext)s")
+    artist, track_title = _track_names(track)
+    query = f"{artist} - {title or track_title}"
+    output = os.path.join(output_dir, f"{get_base_filename(artist, track_title)}.%(ext)s")
 
     cmd = [(config.get("ytdlp_path") or "").strip() or "yt-dlp"]
 
@@ -110,11 +213,15 @@ def build_search_command(track: dict, output_dir: str, audio_format: str, config
     if ffmpeg:
         cmd += ["--ffmpeg-location", ffmpeg]
 
-    cmd.extend(build_extra_ytdlp_args(config))
+    cmd.extend(build_extra_ytdlp_args(config) if extra_args is None else extra_args)
     return cmd
 
 
-SIGN_IN_HINT = "Add --cookies-from-browser chrome (or firefox, edge) to Extra yt-dlp arguments in Settings."
+NO_JS_RUNTIME_MESSAGE = "Signed-in YouTube downloads need Node.js 20+ or Deno installed."
+SIGN_IN_HINT = (
+    "Add --cookies-from-browser chrome (or firefox, edge) to Extra yt-dlp arguments in Settings. "
+    "This needs Node.js 20+ or Deno installed."
+)
 NO_RESULTS_MESSAGE = (
     "YouTube returned no search results. Explicit or age-restricted tracks only show up when signed in. " + SIGN_IN_HINT
 )
@@ -124,6 +231,8 @@ _ERROR_PATTERNS = (
     (("confirm your age",), "This track is age-restricted on YouTube and needs sign-in. " + SIGN_IN_HINT),
     (("sign in to confirm",), "YouTube asked to sign in to confirm you are not a bot. " + SIGN_IN_HINT),
     (("ffmpeg not found", "ffprobe and ffmpeg not found", "ffmpeg is not installed"), "FFmpeg not found. Install FFmpeg or set its path in settings."),
+    (("no supported javascript runtime",), "YouTube needs a JavaScript runtime for this download. " + NO_JS_RUNTIME_MESSAGE),
+    (("requested format is not available", "only images are available"), "YouTube offered no audio for this video. Retry later, or update yt-dlp."),
     (("does not pass filter",), "No search result matched the track length."),
     (("no video results", "no results"), "No YouTube results for this track."),
 )
@@ -181,32 +290,35 @@ def _stop_process(process) -> None:
         pass
 
 
-def run_download(
-    track: dict,
-    output_dir: str,
-    audio_format: str,
-    config: Optional[dict],
-    *,
-    popen_hook: Optional[Callable] = None,
-    cancel_check: Optional[Callable[[], bool]] = None,
-    output_hook: Optional[Callable[[str], None]] = None,
-) -> DownloadResult:
-    """Run the yt-dlp search download for one track and report where the file landed.
+FINAL_ERRORS = (
+    "Cancelled",
+    "yt-dlp not found",
+    "Could not start yt-dlp",
+    "FFmpeg not found",
+    "YouTube is rate limiting",
+)
 
-    @param track: Track dict with artist, track and optionally duration_ms.
+
+def _run_once(
+    cmd: list[str],
+    output_dir: str,
+    base_filename: str,
+    tolerance: float,
+    popen_hook: Optional[Callable],
+    cancel_check: Optional[Callable[[], bool]],
+    output_hook: Optional[Callable[[str], None]],
+) -> DownloadResult:
+    """Run one yt-dlp command and report where the audio file landed.
+
+    @param cmd: The yt-dlp argv.
     @param output_dir: Folder the audio file is written to.
-    @param audio_format: Target audio format such as mp3 or flac.
-    @param config: App config passed to build_search_command.
+    @param base_filename: "Artist - Track" file stem to look for afterwards.
+    @param tolerance: Duration tolerance used in the search, for the error message.
     @param popen_hook: Called with the Popen right after it starts, so a caller can kill it.
     @param cancel_check: Polled while yt-dlp runs, a true result terminates the process.
     @param output_hook: Called with each output line as it arrives.
     """
     from downloader.metadata import find_downloaded_audio_path
-
-    config = config or {}
-    cmd = build_search_command(track, output_dir, audio_format, config)
-    artist, title = _track_names(track)
-    base_filename = get_base_filename(artist, title)
 
     try:
         process = subprocess.Popen(
@@ -251,9 +363,55 @@ def run_download(
     if path:
         return DownloadResult(True, path, None)
 
+    explained = describe_ytdlp_error(lines, "")
+    if explained and "does not pass filter" not in explained:
+        return DownloadResult(False, None, explained)
     if any("does not pass filter" in line.lower() for line in lines):
-        tolerance = _duration_tolerance(config)
         return DownloadResult(False, None, f"No search result within {tolerance:g}s of the track length.")
     if not any(line.startswith("[youtube] ") and "Extracting URL" not in line for line in lines):
-        return DownloadResult(False, None, describe_ytdlp_error(lines, NO_RESULTS_MESSAGE))
-    return DownloadResult(False, None, describe_ytdlp_error(lines, "yt-dlp finished but no audio file was found."))
+        return DownloadResult(False, None, NO_RESULTS_MESSAGE)
+    return DownloadResult(False, None, "yt-dlp finished but no audio file was found.")
+
+
+def run_download(
+    track: dict,
+    output_dir: str,
+    audio_format: str,
+    config: Optional[dict],
+    *,
+    popen_hook: Optional[Callable] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+    output_hook: Optional[Callable[[str], None]] = None,
+) -> DownloadResult:
+    """Search YouTube for one track and download it, retrying with other YouTube clients and then a simpler query.
+
+    @param track: Track dict with artist, track and optionally duration_ms.
+    @param output_dir: Folder the audio file is written to.
+    @param audio_format: Target audio format such as mp3 or flac.
+    @param config: App config passed to build_search_command.
+    @param popen_hook: Called with the Popen right after it starts, so a caller can kill it.
+    @param cancel_check: Polled while yt-dlp runs, a true result terminates the process.
+    @param output_hook: Called with each output line as it arrives.
+    """
+    config = config or {}
+    artist, title = _track_names(track)
+    base_filename = get_base_filename(artist, title)
+    tolerance = _duration_tolerance(config)
+    extra = resolve_extra_args(config)
+
+    attempts = [extra]
+    if "--extractor-args" not in extra:
+        attempts.append(extra + ["--extractor-args", RETRY_PLAYER_CLIENTS])
+    simple = _simplified_title(title)
+    titles = [None] + ([simple] if simple and simple != title else [])
+
+    result = DownloadResult(False, None, "yt-dlp finished but no audio file was found.")
+    first_error = None
+    for search_title in titles:
+        for args in attempts:
+            cmd = build_search_command(track, output_dir, audio_format, config, title=search_title, extra_args=args)
+            result = _run_once(cmd, output_dir, base_filename, tolerance, popen_hook, cancel_check, output_hook)
+            if result.success or result.error.startswith(FINAL_ERRORS):
+                return result
+            first_error = first_error or result.error
+    return DownloadResult(False, None, first_error or result.error)

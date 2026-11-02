@@ -242,5 +242,67 @@ class TestExtraArgsWarning(unittest.TestCase):
         warn.assert_called_once()
 
 
+class TestCookiesAndRuntime(unittest.TestCase):
+    COOKIES = {"ytdlp_extra_args": "--cookies-from-browser firefox --limit-rate 1M"}
+
+    def test_cookies_get_a_js_runtime(self):
+        with mock.patch.object(ytdlp_command, "find_js_runtime", return_value=("node", r"C:\node\node.exe")):
+            args = ytdlp_command.resolve_extra_args(self.COOKIES)
+        self.assertEqual(args[-2:], ["--js-runtimes", r"node:C:\node\node.exe"])
+        self.assertIn("--cookies-from-browser", args)
+
+    def test_cookies_dropped_without_a_runtime(self):
+        with mock.patch.object(ytdlp_command, "find_js_runtime", return_value=None), \
+             mock.patch.object(ytdlp_command, "log_warning") as warn:
+            args = ytdlp_command.resolve_extra_args(self.COOKIES)
+        self.assertEqual(args, ["--limit-rate", "1M"])
+        warn.assert_called_once()
+
+    def test_no_cookies_leaves_args_alone(self):
+        with mock.patch.object(ytdlp_command, "find_js_runtime") as find:
+            args = ytdlp_command.resolve_extra_args({"ytdlp_extra_args": "--limit-rate 1M"})
+        self.assertEqual(args, ["--limit-rate", "1M"])
+        find.assert_not_called()
+
+    def test_old_node_is_not_used(self):
+        old = mock.Mock(stdout="v18.19.0\n")
+        with mock.patch.object(ytdlp_command.subprocess, "run", return_value=old):
+            self.assertFalse(ytdlp_command._node_is_supported("node"))
+
+
+class TestRetries(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        NO_FFMPEG.start()
+        self.addCleanup(NO_FFMPEG.stop)
+        self.track = {"artist": "Artist A", "track": "Song One (Remastered 2011)", "duration_ms": 200000}
+
+    def test_retries_other_clients_then_simpler_title(self):
+        calls = []
+
+        def fake_popen(cmd, **kwargs):
+            calls.append(cmd)
+            if len(calls) == 3:
+                with open(os.path.join(self.tmp.name, "Artist A - Song One (Remastered 2011).mp3"), "w") as f:
+                    f.write("audio")
+            return _fake_proc(0, "")
+
+        with mock.patch("subprocess.Popen", side_effect=fake_popen):
+            result = run_download(self.track, self.tmp.name, "mp3", {})
+
+        self.assertTrue(result.success)
+        self.assertNotIn("--extractor-args", calls[0])
+        self.assertEqual(_flag_value(calls[1], "--extractor-args"), ytdlp_command.RETRY_PLAYER_CLIENTS)
+        self.assertEqual(calls[2][1], "ytsearch5:Artist A - Song One")
+
+    def test_final_errors_are_not_retried(self):
+        output = "ERROR: HTTP Error 429: Too Many Requests\n"
+        with mock.patch("subprocess.Popen", return_value=_fake_proc(1, output)) as popen:
+            result = run_download(self.track, self.tmp.name, "mp3", {})
+        self.assertEqual(popen.call_count, 1)
+        self.assertIn("429", result.error)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
