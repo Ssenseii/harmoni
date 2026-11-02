@@ -16,5 +16,9 @@ async def download_playlist(playlist_name, tracks, output_dir, audio_format, sle
     log_info(f"Downloading playlist: {playlist_name} → {len(tracks)} tracks")
 
     # Pass complete track dictionaries to preserve all metadata
-    await batch_download(tracks, playlist_dir, audio_format, config=config)
-    log_success(f"Finished downloading playlist: {playlist_name}")
+    failed = await batch_download(tracks, playlist_dir, audio_format, config=config)
+    if failed:
+        log_error(f"Finished playlist {playlist_name} with {len(failed)} failed tracks. Use Retry failed downloads to try them again.")
+    else:
+        log_success(f"Finished downloading playlist: {playlist_name}")
+    return failed

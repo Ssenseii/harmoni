@@ -1,17 +1,48 @@
-import os
-import subprocess
 import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from utils import log_info, log_success, log_error, log_warning
-from utils.ytdlp_args import build_extra_ytdlp_args
+from downloader.ytdlp_command import DownloadResult, get_base_filename, run_download
 from tqdm import tqdm
 
 
 def _get_base_filename(artist: str, track: str) -> str:
     """Generate the base filename used by yt-dlp for consistent metadata embedding."""
-    query = f"{artist} - {track}"
-    return query.replace("/", "-")
+    return get_base_filename(artist, track)
+
+
+def _record_failure(track_dict: dict, output_dir: str, error, config) -> None:
+    """Add a failed track to failed_downloads.json, logging instead of raising on errors.
+
+    @param track_dict: The track that failed.
+    @param output_dir: Folder the track was meant to land in.
+    @param error: Short error message from the download.
+    @param config: App config passed through for backups.
+    """
+    from downloader.retry_manager import add_failed_track
+
+    try:
+        add_failed_track(
+            (track_dict.get("artist") or "").strip(),
+            (track_dict.get("track") or "").strip(),
+            error=error,
+            config=config,
+            track_data=track_dict,
+            output_dir=output_dir,
+        )
+    except Exception as e:
+        log_error(f"Could not record failed download: {e}")
+
+
+def _sleep_between(config) -> float:
+    """Return the configured pause between downloads in seconds.
+
+    @param config: App config, read for sleep_between.
+    """
+    try:
+        return max(0.0, float((config or {}).get("sleep_between", 0) or 0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _embed_metadata_after_download(
@@ -47,117 +78,113 @@ def _embed_metadata_after_download(
         return False
 
 
-def download_track(artist, track, output_dir, audio_format, sleep_between, config=None, track_data=None):
+def download_track(artist, track, output_dir, audio_format, sleep_between, config=None, track_data=None, record_failure=True):
+    """Download one track, embed its metadata and return a DownloadResult.
+
+    @param artist: Artist name.
+    @param track: Track title.
+    @param output_dir: Folder the audio file is written to.
+    @param audio_format: Target audio format such as mp3 or flac.
+    @param sleep_between: Seconds to pause after the download.
+    @param config: App config.
+    @param track_data: Full track dict for metadata and duration matching, artist and track win over its keys.
+    @param record_failure: Add the track to failed_downloads.json when the download fails.
+    """
     query = f"{artist} - {track}"
-    filename = _get_base_filename(artist, track)
+    track_dict = dict(track_data or {})
+    track_dict["artist"] = artist
+    track_dict["track"] = track
 
     log_info(f"Starting download: {query}")
-    cmd = [
-        "yt-dlp",
-        f"ytsearch1:{query}",
-        "-x",
-        "--audio-format", audio_format,
-        "-o", os.path.join(output_dir, f"{filename}.%(ext)s")
-    ]
-    cmd.extend(build_extra_ytdlp_args(config))
-
     try:
-        process = subprocess.Popen(cmd)
-        process.wait()
-        if process.returncode == 0:
-            log_success(f"Downloaded successfully: {query}")
-            
-            # Try to find the downloaded audio file and embed metadata
-            try:
-                from downloader.metadata import find_downloaded_audio_path
-                audio_path = find_downloaded_audio_path(output_dir, filename)
-                if audio_path:
-                    # Use full track_data if provided, otherwise create minimal dict
-                    metadata = track_data if track_data else {"artist": artist, "track": track}
-                    metadata_success = _embed_metadata_after_download(audio_path, metadata, config or {})
-                    if metadata_success:
-                        log_info(f"Metadata embedded for {query}")
-                    else:
-                        log_warning(f"Metadata embedding failed for {query}")
-                else:
-                    log_warning(f"Could not find downloaded audio file for metadata embedding: {filename}")
-            except Exception as e:
-                log_warning(f"Metadata embedding step failed: {e}")
-        else:
-            log_error(f"Failed to download: {query}")
+        result = run_download(track_dict, output_dir, audio_format, config, output_hook=print)
     except Exception as e:
-        log_error(f"Error downloading {query}: {e}")
+        result = DownloadResult(False, None, str(e))
+
+    if result.success:
+        log_success(f"Downloaded successfully: {query}")
+        try:
+            if _embed_metadata_after_download(result.path, track_dict, config or {}):
+                log_info(f"Metadata embedded for {query}")
+            else:
+                log_warning(f"Metadata embedding failed for {query}")
+        except Exception as e:
+            log_warning(f"Metadata embedding step failed: {e}")
+    else:
+        log_error(f"Failed to download: {query} ({result.error})")
+        if record_failure:
+            _record_failure(track_dict, output_dir, result.error, config)
 
     time.sleep(sleep_between)
+    return result
 
 
-# Worker function for a single track
 def _download_worker(track_dict, output_dir, audio_format, config=None):
-    artist = track_dict.get("artist", "").strip()
-    track = track_dict.get("track", "").strip()
-    query = f"{artist} - {track}"
-    filename = _get_base_filename(artist, track)
+    """Download one track inside a batch thread, record a failure and pause for sleep_between.
 
-    cmd = [
-        "yt-dlp",
-        f"ytsearch1:{query}",
-        "-x",
-        "--audio-format", audio_format,
-        "-o", os.path.join(output_dir, f"{filename}.%(ext)s")
-    ]
-    cmd.extend(build_extra_ytdlp_args(config))
+    @param track_dict: Track dict with artist, track and any metadata.
+    @param output_dir: Folder the audio file is written to.
+    @param audio_format: Target audio format such as mp3 or flac.
+    @param config: App config.
+    """
+    artist = (track_dict.get("artist") or "").strip()
+    track = (track_dict.get("track") or "").strip()
+    query = f"{artist} - {track}"
 
     try:
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
-        
-        if process.returncode == 0:
-            log_success(f"Downloaded: {query}")
-            
-            # Try to find the downloaded audio file and embed metadata
-            try:
-                from downloader.metadata import find_downloaded_audio_path
-                audio_path = find_downloaded_audio_path(output_dir, filename)
-                if audio_path:
-                    # Pass the full track dictionary for complete metadata
-                    metadata_success = _embed_metadata_after_download(audio_path, track_dict, config or {})
-                    if not metadata_success:
-                        log_warning(f"Metadata embedding failed for {query}")
-                else:
-                    log_warning(f"Could not find downloaded audio file for metadata embedding: {filename}")
-            except Exception as e:
-                log_warning(f"Metadata embedding step failed: {e}")
-        else:
-            log_error(f"Failed: {query}")
-            if stderr:
-                log_error(f"Error details: {stderr.strip()}")
+        result = run_download(track_dict, output_dir, audio_format, config)
     except Exception as e:
-        log_error(f"Error downloading {query}: {e}")
+        result = DownloadResult(False, None, str(e))
+
+    if result.success:
+        log_success(f"Downloaded: {query}")
+        try:
+            if not _embed_metadata_after_download(result.path, track_dict, config or {}):
+                log_warning(f"Metadata embedding failed for {query}")
+        except Exception as e:
+            log_warning(f"Metadata embedding step failed: {e}")
+    else:
+        log_error(f"Failed: {query} ({result.error})")
+        _record_failure(track_dict, output_dir, result.error, config)
+
+    pause = _sleep_between(config)
+    if pause:
+        time.sleep(pause)
+    return result
 
 
-# Async batch downloader
-async def batch_download(tracks, output_dir, audio_format, max_workers=4, config=None):
+async def batch_download(tracks, output_dir, audio_format, max_workers=4, config=None, save_progress_first=False):
+    """Download tracks concurrently and return the tracks that failed.
+
+    @param tracks: List of track dicts with artist and track keys.
+    @param output_dir: Output directory for downloads.
+    @param audio_format: Audio format such as mp3 or flac.
+    @param max_workers: Maximum concurrent downloads.
+    @param config: Optional config dict for sleep_between, auto-cleanup and backup.
+    @param save_progress_first: Save tracks to the resume file before starting and leave only the failures there after.
     """
-    Download multiple tracks concurrently.
-    
-    Args:
-        tracks: List of track dicts with 'artist' and 'track' keys
-        output_dir: Output directory for downloads
-        audio_format: Audio format (mp3, flac, etc.)
-        max_workers: Maximum concurrent downloads
-        config: Optional config dict for auto-cleanup and backup
-    """
+    if save_progress_first:
+        from managers.resume_manager import save_progress
+        save_progress(list(tracks))
+
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         tasks = []
         with tqdm(total=len(tracks), desc="Downloading", unit="track") as pbar:
             for track in tracks:
-                # Pass the entire track dictionary to preserve all metadata
                 task = loop.run_in_executor(executor, _download_worker, track, output_dir, audio_format, config)
                 task.add_done_callback(lambda _: pbar.update(1))
                 tasks.append(task)
-            await asyncio.gather(*tasks)
-    
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    failed = [
+        track for track, result in zip(tracks, results)
+        if isinstance(result, BaseException) or not result.success
+    ]
+
+    if save_progress_first:
+        save_progress(failed)
+
     # Post-download operations if config is provided
     if config:
         # Auto-backup data files
@@ -199,3 +226,5 @@ async def batch_download(tracks, output_dir, audio_format, max_workers=4, config
                 pass
             except Exception as e:
                 log_error(f"Auto metadata embedding failed: {e}")
+
+    return failed

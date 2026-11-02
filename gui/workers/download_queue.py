@@ -28,6 +28,7 @@ class QueueItem:
     progress: int = 0  # 0-100
     error_message: Optional[str] = None
     file_path: Optional[str] = None
+    track_data: dict = field(default_factory=dict)
 
 
 class DownloadQueue(QObject):
@@ -36,6 +37,7 @@ class DownloadQueue(QObject):
 
     Signals:
         item_added: Emitted when a new item is added
+        items_added: Emitted once with the list of items added by add_tracks
         item_updated: Emitted when an item's status changes
         item_removed: Emitted when an item is removed
         queue_updated: Emitted with total pending count
@@ -46,6 +48,7 @@ class DownloadQueue(QObject):
 
     # Signals
     item_added = Signal(object)  # QueueItem
+    items_added = Signal(list)  # list of QueueItem
     item_updated = Signal(object)  # QueueItem
     item_removed = Signal(str)  # item_id
     queue_updated = Signal(int)  # pending count
@@ -94,16 +97,35 @@ class DownloadQueue(QObject):
         """Check if downloads are paused."""
         return self._is_paused
 
-    def add_track(self, artist: str, track: str, playlist: Optional[str] = None) -> QueueItem:
-        """Add a single track to the queue."""
-        item = QueueItem(
+    @staticmethod
+    def _new_item(artist: str, track: str, playlist: Optional[str], track_data: Optional[dict]) -> QueueItem:
+        """Build a pending QueueItem that keeps a copy of the source track dict.
+
+        @param artist: Artist name.
+        @param track: Track title.
+        @param playlist: Optional playlist name shown as the source.
+        @param track_data: Full source track dict, used for duration matching and metadata.
+        """
+        return QueueItem(
             id=str(uuid.uuid4()),
             artist=artist,
             track=track,
             playlist=playlist,
             status=DownloadStatus.PENDING,
-            progress=0
+            progress=0,
+            track_data=dict(track_data or {}),
         )
+
+    def add_track(self, artist: str, track: str, playlist: Optional[str] = None,
+                  track_data: Optional[dict] = None) -> QueueItem:
+        """Add a single track to the queue.
+
+        @param artist: Artist name.
+        @param track: Track title.
+        @param playlist: Optional playlist name shown as the source.
+        @param track_data: Optional full source track dict kept on the item.
+        """
+        item = self._new_item(artist, track, playlist, track_data)
         self._items.append(item)
         self.item_added.emit(item)
         self.queue_updated.emit(self.pending_count)
@@ -111,7 +133,10 @@ class DownloadQueue(QObject):
 
     def add_item(self, artist: str, track: str, album: str = "", playlist: str = "") -> QueueItem:
         """Add a single item to the queue (alias for add_track with album support)."""
-        return self.add_track(artist, track, playlist or None)
+        track_data = {"artist": artist, "track": track}
+        if album:
+            track_data["album"] = album
+        return self.add_track(artist, track, playlist or None, track_data=track_data)
 
     def add_tracks(self, tracks: list, playlist: Optional[str] = None) -> List[QueueItem]:
         """
@@ -126,11 +151,14 @@ class DownloadQueue(QObject):
         """
         items = []
         for track in tracks:
-            artist = track.get("artist", "").strip()
-            track_name = track.get("track", "").strip()
+            artist = (track.get("artist") or "").strip()
+            track_name = (track.get("track") or "").strip()
             if artist and track_name:
-                item = self.add_track(artist, track_name, playlist)
-                items.append(item)
+                items.append(self._new_item(artist, track_name, playlist, track))
+        if items:
+            self._items.extend(items)
+            self.items_added.emit(items)
+            self.queue_updated.emit(self.pending_count)
         return items
 
     def get_item(self, item_id: str) -> Optional[QueueItem]:
@@ -210,9 +238,9 @@ class DownloadQueue(QObject):
         return self.pending_count > 0
 
     def retry_failed(self):
-        """Reset all failed items to pending."""
+        """Reset all failed and cancelled items to pending."""
         for item in self._items:
-            if item.status == DownloadStatus.FAILED:
+            if item.status in (DownloadStatus.FAILED, DownloadStatus.CANCELLED):
                 item.status = DownloadStatus.PENDING
                 item.progress = 0
                 item.error_message = None

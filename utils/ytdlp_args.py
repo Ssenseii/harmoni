@@ -2,6 +2,8 @@
 
 import shlex
 
+from utils.logger import log_warning
+
 
 def build_extra_ytdlp_args(config: dict) -> list[str]:
     """
@@ -19,8 +21,8 @@ def build_extra_ytdlp_args(config: dict) -> list[str]:
     if ytdlp_extra:
         try:
             args.extend(shlex.split(ytdlp_extra))
-        except ValueError:
-            pass  # malformed quoting in user input; ignore rather than crash the download
+        except ValueError as e:
+            log_warning(f"Ignoring ytdlp_extra_args because it could not be parsed ({e}): {ytdlp_extra}")
 
     ffmpeg_extra = (config.get("ffmpeg_extra_args") or "").strip()
     if ffmpeg_extra:
