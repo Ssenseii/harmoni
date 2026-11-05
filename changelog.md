@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.3.0] - 2026-11-05
 
 ### Added
 - **Spotify setup guidance**: When Spotify is not configured, a step-by-step guide opens the Spotify dashboard, lets you copy the redirect URI, and takes you to the Client ID field, instead of silently switching to Exportify.
