@@ -20,37 +20,39 @@ from downloader.playlist_download import download_playlist
 from downloader.youtube_link_downloader import download_from_link, download_from_playlist
 from menus.song_selection_menu import select_songs_for_playlist
 
+NOT_FETCHABLE_REASON = "Spotify only lets apps read playlists you own or collaborate on"
+
 
 def _sanitize_playlist_name(name: str) -> str:
     return (name or "").replace("/", "-").strip()
 
 
-def _normalize_legacy_playlist_tracks(pl: dict) -> list:
-    """Normalize legacy playlists.json playlist items into [{'artist','track'}, ...]."""
-    tracks = []
-    for item in pl.get("items", []) or []:
-        t = item.get("track") if isinstance(item, dict) else None
-        if not t:
-            continue
-        artist = (t.get("artistName") or "").strip()
-        name = (t.get("trackName") or "").strip()
-        if artist and name:
-            tracks.append({"artist": artist, "track": name})
-    return tracks
+def _load_legacy_playlists(config: dict) -> list:
+    """Return the named playlists from playlists_file as [{'name', 'tracks'}, ...].
+
+    @param config: App config holding playlists_file.
+    """
+    playlists = []
+    for pl in load_playlists(config["playlists_file"]) or []:
+        name = (pl.get("name") or "").strip()
+        if name:
+            playlists.append({"name": name, "tracks": pl.get("tracks") or []})
+    return playlists
 
 
 def _spotify_setup_help(config: dict) -> None:
     try:
+        from config import DEFAULT_CONFIG
         from spotify_api.auth import check_spotify_credentials, spotify_app_setup_instructions
 
         creds = check_spotify_credentials(config)
         log_info("\n" + "=" * 72)
         log_info("SPOTIFY WEB API SETUP")
         log_info("=" * 72)
-        log_info(spotify_app_setup_instructions(redirect_uri=creds.get("redirect_uri") or "http://localhost:8888/callback"))
+        log_info(spotify_app_setup_instructions(redirect_uri=creds.get("redirect_uri") or DEFAULT_CONFIG["spotify_redirect_uri"]))
         log_info("")
         log_info("Current config status:")
-        log_info(f"- spotify_client_id: {('SET' if (config.get('spotify_client_id') or '').strip() else 'NOT SET (Exportify fallback will be used)')}")
+        log_info(f"- spotify_client_id: {('SET' if (config.get('spotify_client_id') or '').strip() else 'NOT SET (required)')}")
         log_info(f"- spotify_redirect_uri: {creds.get('redirect_uri') or ''}")
         log_info(f"- spotify_scopes: {', '.join(creds.get('scopes') or [])}")
         log_info("")
@@ -89,12 +91,8 @@ def _spotify_authenticate(config: dict) -> None:
 
         creds = check_spotify_credentials(config)
         if not creds.get("ok"):
-            log_warning(creds.get("message") or "Spotify credentials are incomplete.")
             _spotify_setup_help(config)
             return
-
-        if creds.get("client_id_source") == "exportify_fallback":
-            log_warning("Using Exportify's public Spotify client id. This may stop working if Exportify rotates credentials.")
 
         auth = SpotifyPKCEAuth(config)
         flow = auth.begin_oauth_flow(show_dialog=True)
@@ -280,7 +278,7 @@ def _spotify_download_from_playlists(config: dict) -> None:
         loader = SpotifyDataLoader(client)
 
         try:
-            me = client.me() or {}
+            me = loader.current_user()
             display = (me.get("display_name") or me.get("id") or "").strip()
             if display:
                 log_info(f"Signed in as: {display}")
@@ -305,7 +303,8 @@ def _spotify_download_from_playlists(config: dict) -> None:
             total = p.get("tracks_total")
             total_str = f"{int(total)}" if isinstance(total, int) else (str(total) if total is not None else "?")
             title = f"{name} ({total_str} tracks)" + (f" — {owner}" if owner else "")
-            choices.append(questionary.Choice(title=title, value=pid))
+            disabled = None if p.get("fetchable", True) else NOT_FETCHABLE_REASON
+            choices.append(questionary.Choice(title=title, value=pid, disabled=disabled))
 
         if not choices:
             log_info("No usable playlists returned by Spotify.")
@@ -337,6 +336,9 @@ def _spotify_download_from_playlists(config: dict) -> None:
         for pid in selected_ids:
             p = by_id.get(pid) or {}
             pl_name = (p.get("name") or "Spotify Playlist").strip()
+            if not p.get("fetchable", True):
+                log_warning(f"Skipped '{pl_name}': {NOT_FETCHABLE_REASON}. Export it with Exportify and use the CSV import.")
+                continue
 
             log_info("")
             log_info(f"Loading playlist from Spotify: {pl_name}")
@@ -562,7 +564,9 @@ def downloads_menu(config):
                 continue
 
             log_info(f"Downloading {len(pending)} tracks in batch async mode...")
-            asyncio.run(batch_download(pending, config["output_dir"], config["audio_format"], config=config))
+            asyncio.run(batch_download(
+                pending, config["output_dir"], config["audio_format"], config=config, save_progress_first=True
+            ))
 
         elif choice == "Search & Download a single track":
             artist = questionary.text("Enter artist name (leave empty if unknown):").ask()
@@ -592,15 +596,7 @@ def downloads_menu(config):
             _spotify_api_menu(config)
 
         elif choice == "Download from playlists file (legacy Spotify export)":
-            raw_playlists = load_playlists(config["playlists_file"])
-
-            playlists = []
-            for pl in raw_playlists or []:
-                name = (pl.get("name") or "").strip()
-                if not name:
-                    continue
-                tracks = _normalize_legacy_playlist_tracks(pl)
-                playlists.append({"name": name, "tracks": tracks})
+            playlists = _load_legacy_playlists(config)
 
             if not playlists:
                 log_info("No playlists found in playlists file.")

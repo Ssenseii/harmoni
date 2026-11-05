@@ -1,24 +1,26 @@
-import json
+from utils.jsonio import load_json, write_json_atomic
 from utils.logger import log_info, log_error
 from constants import PROGRESS_FILE
 
 def save_progress(pending_tracks):
+    """Write the tracks still to download to the resume file.
+
+    @param pending_tracks: List of track dicts.
+    """
     try:
-        with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
-            json.dump(pending_tracks, f, indent=2)
+        write_json_atomic(PROGRESS_FILE, pending_tracks)
         log_info("Saved download progress.")
     except Exception as e:
         log_error(f"Failed to save progress: {e}")
 
 def resume_batch(config):
-    try:
-        with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
-            pending_tracks = json.load(f)
-    except FileNotFoundError:
+    """Download the tracks in the resume file and keep only the ones that failed again.
+
+    @param config: App config with output_dir and audio_format.
+    """
+    pending_tracks = load_json(PROGRESS_FILE, None)
+    if pending_tracks is None:
         log_info("No saved progress found.")
-        return
-    except Exception as e:
-        log_error(f"Error reading progress: {e}")
         return
 
     if not pending_tracks:
@@ -29,12 +31,10 @@ def resume_batch(config):
     import asyncio
 
     log_info(f"Resuming batch download of {len(pending_tracks)} tracks...")
-    asyncio.run(batch_download(pending_tracks, config["output_dir"], config["audio_format"]))
+    failed = asyncio.run(batch_download(pending_tracks, config["output_dir"], config["audio_format"], config=config))
 
-    # After successful download clear progress file
-    try:
-        with open(PROGRESS_FILE, "w") as f:
-            json.dump([], f)
+    save_progress(failed)
+    if failed:
+        log_info(f"{len(failed)} tracks failed again and stay in the progress file.")
+    else:
         log_info("Cleared progress file.")
-    except Exception as e:
-        log_error(f"Failed to clear progress file: {e}")

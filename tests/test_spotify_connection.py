@@ -51,11 +51,16 @@ class TestCheckSpotifyCredentials(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("spotify_redirect_uri", result["message"])
 
-    def test_missing_client_id_falls_back_to_exportify_and_is_still_ok(self):
+    def test_missing_client_id_is_not_ok_and_explains_setup(self):
         result = check_spotify_credentials({"spotify_redirect_uri": "http://127.0.0.1:8888/callback"})
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["client_id_source"], "exportify_fallback")
-        self.assertEqual(result["client_id"], get_effective_spotify_client_id({}))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["client_id"], "")
+        self.assertEqual(get_effective_spotify_client_id({}), "")
+        message = result["message"]
+        self.assertIn("https://developer.spotify.com/dashboard", message)
+        self.assertIn("http://127.0.0.1:8888/callback", message)
+        self.assertIn("Premium", message)
+        self.assertIn("User Management", message)
 
     def test_configured_client_id_is_used_and_marked_ok(self):
         result = check_spotify_credentials({

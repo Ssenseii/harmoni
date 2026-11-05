@@ -18,7 +18,7 @@ def schedule_download(config):
             log_info("No pending downloads for scheduled job.")
             return
         log_info("Starting scheduled batch download...")
-        asyncio.run(batch_download(pending, config["output_dir"], config["audio_format"]))
+        asyncio.run(batch_download(pending, config["output_dir"], config["audio_format"], config=config))
 
     try:
         schedule.every().day.at(time_str).do(job)

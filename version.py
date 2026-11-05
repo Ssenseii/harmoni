@@ -5,4 +5,4 @@ tag "v1.2.1"). Used for the title bar badge and the startup update check
 against GitHub Releases.
 """
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"

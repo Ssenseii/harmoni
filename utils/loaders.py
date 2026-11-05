@@ -189,6 +189,10 @@ def load_tracks(tracks_file):
     if isinstance(tracks_file, str) and tracks_file.lower().endswith(".csv"):
         return load_exportify_tracks(tracks_file)
 
+    if not tracks_file or not os.path.exists(tracks_file):
+        log_warning(f"Tracks file not found: {tracks_file}. Copy data/tracks.example.json to start one.")
+        return []
+
     try:
         import json
         with open(tracks_file, "r", encoding="utf-8") as f:
@@ -212,9 +216,32 @@ def load_tracks(tracks_file):
         return []
 
 
+def _spotify_export_item_to_track(item) -> dict:
+    """Map one Spotify data export playlist item to the flat artist/track/album/uri shape.
+
+    @param item: An entry of a playlist's items list, holding a track dict with trackName and artistName.
+    """
+    t = item.get("track") if isinstance(item, dict) else None
+    if not isinstance(t, dict):
+        return {}
+    return {
+        "artist": t.get("artistName") or "",
+        "track": t.get("trackName") or "",
+        "album": t.get("albumName") or "",
+        "uri": t.get("trackUri") or "",
+    }
+
+
 def load_playlists(playlists_file):
-    """Load playlists with enhanced metadata extraction."""
+    """Load playlists from either the flat tracks shape or the Spotify data export items shape.
+
+    @param playlists_file: Path to the playlists JSON file.
+    """
     import json
+    if not playlists_file or not os.path.exists(playlists_file):
+        log_warning(f"Playlists file not found: {playlists_file}. Copy data/playlists.example.json to start one.")
+        return []
+
     try:
         with open(playlists_file, "r", encoding="utf-8") as f:
             json_data = json.load(f)
@@ -235,7 +262,9 @@ def load_playlists(playlists_file):
                 "tracks": []
             }
             
-            tracks = playlist.get("tracks", [])
+            tracks = playlist.get("tracks")
+            if not isinstance(tracks, list):
+                tracks = [_spotify_export_item_to_track(i) for i in playlist.get("items") or []]
             if isinstance(tracks, list):
                 for track in tracks:
                     metadata = _extract_json_metadata(track)

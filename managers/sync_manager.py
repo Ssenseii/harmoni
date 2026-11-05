@@ -1,14 +1,15 @@
 import os
-import json
 import time
 import hashlib
 from datetime import datetime
 from typing import List, Optional
 from utils.logger import log_info, log_warning, log_error
 from utils.loaders import load_exportify_tracks
+from utils.jsonio import load_json, write_json_atomic
+from constants import APP_DIR
 
 # State file to track synced files
-SYNC_STATE_FILE = "data/sync_state.json"
+SYNC_STATE_FILE = os.path.join(APP_DIR, "data", "sync_state.json")
 
 
 def get_file_hash(filepath: str) -> str:
@@ -24,21 +25,12 @@ def get_file_hash(filepath: str) -> str:
 
 def load_sync_state() -> dict:
     """Load the sync state from file."""
-    if not os.path.exists(SYNC_STATE_FILE):
-        return {"synced_files": {}, "last_sync": None}
-
-    try:
-        with open(SYNC_STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return {"synced_files": {}, "last_sync": None}
+    return load_json(SYNC_STATE_FILE, {"synced_files": {}, "last_sync": None})
 
 
 def save_sync_state(state: dict):
     """Save the sync state to file."""
-    os.makedirs(os.path.dirname(SYNC_STATE_FILE), exist_ok=True)
-    with open(SYNC_STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2)
+    write_json_atomic(SYNC_STATE_FILE, state, indent=2)
 
 
 def detect_new_files(exportify_dir: str) -> List[dict]:
@@ -137,12 +129,7 @@ def sync_exportify_folder(config: dict) -> dict:
             except ImportError:
                 pass
 
-        try:
-            with open(tracks_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                existing_tracks = data.get("tracks", [])
-        except (json.JSONDecodeError, IOError):
-            existing_tracks = []
+        existing_tracks = load_json(tracks_file, {}).get("tracks", [])
 
     # Create set of existing track identifiers for deduplication
     for t in existing_tracks:
@@ -198,9 +185,7 @@ def sync_exportify_folder(config: dict) -> dict:
     # Save updated tracks.json (optional)
     if should_update_tracks_json:
         try:
-            os.makedirs(os.path.dirname(tracks_file) or ".", exist_ok=True)
-            with open(tracks_file, "w", encoding="utf-8") as f:
-                json.dump({"tracks": existing_tracks}, f, indent=2)
+            write_json_atomic(tracks_file, {"tracks": existing_tracks}, indent=2)
             results["tracks_file_updated"] = True
             log_info(f"Updated {tracks_file} with {results['new_tracks']} new tracks")
         except IOError as e:

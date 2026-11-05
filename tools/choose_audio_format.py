@@ -1,5 +1,5 @@
-import json
 import questionary
+from config import save_config
 from constants import VALID_AUDIO_EXTENSIONS
 from utils.logger import log_success, log_error
 
@@ -23,8 +23,7 @@ def choose_audio_format(config):
         new_format = choice.split()[0].strip(".")
         config["audio_format"] = new_format
 
-        with open("config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
+        save_config(config)
 
         log_success(f"Audio format updated to: {new_format}")
 

@@ -2,6 +2,7 @@ import os
 import subprocess
 from constants import VALID_AUDIO_EXTENSIONS
 from utils.logger import log_info, log_success, log_error
+from utils.system import hidden_subprocess_kwargs
 
 def is_file_corrupted(file_path):
     """
@@ -10,7 +11,7 @@ def is_file_corrupted(file_path):
     """
     try:
         cmd = ["ffmpeg", "-v", "error", "-i", file_path, "-f", "null", "-"]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **hidden_subprocess_kwargs())
         return result.returncode != 0
     except Exception:
         return True

@@ -4,12 +4,14 @@ Checks if a newer version of yt-dlp is available and notifies the user.
 """
 
 import os
+import shutil
 import subprocess
 import json
 import urllib.request
 import urllib.error
 from typing import Optional, Tuple
 from utils.logger import log_info, log_warning
+from utils.system import hidden_subprocess_kwargs
 
 
 def get_installed_version(ytdlp_path: Optional[str] = None) -> Optional[str]:
@@ -30,7 +32,8 @@ def get_installed_version(ytdlp_path: Optional[str] = None) -> Optional[str]:
             [binary, "--version"],
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=5,
+            **hidden_subprocess_kwargs()
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -39,6 +42,20 @@ def get_installed_version(ytdlp_path: Optional[str] = None) -> Optional[str]:
         return None
     except Exception:
         return None
+
+
+def find_ytdlp(ytdlp_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+    """Locate the yt-dlp binary Harmoni would use and read its version.
+
+    @param ytdlp_path: Configured binary to prefer, falling back to PATH when it is not a file.
+    """
+    if ytdlp_path and os.path.isfile(ytdlp_path):
+        found_path = ytdlp_path
+    else:
+        found_path = shutil.which("yt-dlp")
+    if not found_path:
+        return None, None
+    return found_path, get_installed_version(found_path)
 
 
 def get_latest_version() -> Optional[str]:

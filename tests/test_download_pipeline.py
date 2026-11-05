@@ -3,6 +3,7 @@ built for a track, and DownloadWorker._download_single's success/failure handlin
 These are the paths that must work before every release, so no real download or
 network access happens here - subprocess.Popen is mocked.
 """
+import io
 import os
 import tempfile
 import unittest
@@ -20,8 +21,10 @@ from gui.workers.download_worker import DownloadWorker
 
 def _fake_popen(returncode=0, stdout="", stderr=""):
     proc = mock.MagicMock()
-    proc.communicate.return_value = (stdout, stderr)
+    proc.stdout = io.StringIO(stdout + stderr)
     proc.returncode = returncode
+    proc.poll.return_value = returncode
+    proc.wait.return_value = returncode
     return proc
 
 
@@ -39,7 +42,8 @@ class TestBaseDownloaderCommand(unittest.TestCase):
             track = {"artist": "Artist A", "track": "Song One"}
 
             with mock.patch("subprocess.Popen", return_value=_fake_popen(returncode=0)) as popen, \
-                 mock.patch("downloader.metadata.find_downloaded_audio_path", return_value=None):
+                 mock.patch("downloader.metadata.find_downloaded_audio_path", return_value=None), \
+                 mock.patch("downloader.base_downloader._record_failure"):
                 _download_worker(track, td, "mp3", config={})
 
             cmd = popen.call_args[0][0]
@@ -58,7 +62,8 @@ class TestBaseDownloaderCommand(unittest.TestCase):
             config = {"ytdlp_extra_args": "--limit-rate 1M"}
 
             with mock.patch("subprocess.Popen", return_value=_fake_popen(returncode=0)) as popen, \
-                 mock.patch("downloader.metadata.find_downloaded_audio_path", return_value=None):
+                 mock.patch("downloader.metadata.find_downloaded_audio_path", return_value=None), \
+                 mock.patch("downloader.base_downloader._record_failure"):
                 _download_worker(track, td, "mp3", config=config)
 
             cmd = popen.call_args[0][0]
@@ -79,6 +84,48 @@ class TestBaseDownloaderCommand(unittest.TestCase):
             called_path, called_track = embed.call_args[0][0], embed.call_args[0][1]
             self.assertEqual(called_path, audio_path)
             self.assertEqual(called_track, track)
+
+
+class TestYoutubeLinkDownloader(unittest.TestCase):
+    def _run(self, func, *args):
+        """Run a link download with yt-dlp and the prompt mocked, and return the subprocess.run calls.
+
+        @param func: download_from_link or download_from_playlist.
+        @param args: Positional arguments for func.
+        """
+        from downloader import youtube_link_downloader as yld
+
+        info = mock.MagicMock(returncode=0, stdout='{"title": "T", "playlist_title": "P"}\n')
+        with mock.patch.object(yld.subprocess, "run", return_value=info) as run, \
+             mock.patch.object(yld.questionary, "confirm") as confirm:
+            confirm.return_value.ask.return_value = True
+            func(*args, config={})
+        return run.call_args_list
+
+    def test_single_video_download_passes_no_playlist(self):
+        from downloader.youtube_link_downloader import download_from_link
+
+        calls = self._run(download_from_link, "https://youtu.be/x?list=PL1", "out", "mp3")
+        self.assertIn("--no-playlist", calls[-1].args[0])
+
+    def test_playlist_download_does_not_pass_no_playlist(self):
+        from downloader.youtube_link_downloader import download_from_playlist
+
+        calls = self._run(download_from_playlist, "https://youtube.com/playlist?list=PL1", "out", "mp3", 0)
+        self.assertNotIn("--no-playlist", calls[-1].args[0])
+
+    def test_captured_info_call_is_hidden_but_downloads_keep_the_console(self):
+        from downloader.youtube_link_downloader import download_from_link, download_from_playlist
+
+        for func, args in (
+            (download_from_link, ("https://youtu.be/x", "out", "mp3")),
+            (download_from_playlist, ("https://youtube.com/playlist?list=PL1", "out", "mp3", 0)),
+        ):
+            with mock.patch("downloader.youtube_link_downloader.hidden_subprocess_kwargs",
+                            return_value={"creationflags": 0x08000000}):
+                calls = self._run(func, *args)
+            self.assertEqual(calls[0].kwargs.get("creationflags"), 0x08000000, func.__name__)
+            self.assertNotIn("creationflags", calls[-1].kwargs, func.__name__)
 
 
 class TestDownloadWorkerSingleTrack(unittest.TestCase):

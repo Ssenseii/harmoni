@@ -1,13 +1,13 @@
 """Download worker thread for GUI."""
 
 import os
-import subprocess
 from typing import Optional
 
 from PySide6.QtCore import QThread, Signal
 
+from downloader.ytdlp_command import run_download
 from gui.workers.download_queue import DownloadQueue, DownloadStatus, QueueItem
-from utils.ytdlp_args import build_extra_ytdlp_args
+from utils import log_error, log_warning
 
 
 class DownloadWorker(QThread):
@@ -34,6 +34,7 @@ class DownloadWorker(QThread):
         self.config = config
         self._cancelled = False
         self._paused = False
+        self._process = None
 
     def run(self):
         """Process all pending downloads in the queue."""
@@ -44,13 +45,15 @@ class DownloadWorker(QThread):
             configure_ffmpeg_path()
         except FileNotFoundError as e:
             # FFmpeg not found - fail all downloads
-            for item in self.queue.get_pending_items():
+            pending = self.queue.get_pending_items()
+            for item in pending:
                 self.queue.update_item_status(
                     item.id,
                     DownloadStatus.FAILED,
                     error_message=str(e)
                 )
                 self.track_failed.emit(item.id, str(e))
+            self.all_completed.emit(0, len(pending))
             return
 
         success_count = 0
@@ -76,14 +79,6 @@ class DownloadWorker(QThread):
             # Download the track
             success, file_path, error = self._download_single(item)
 
-            if self._cancelled:
-                self.queue.update_item_status(
-                    item.id,
-                    DownloadStatus.CANCELLED,
-                    error_message="Cancelled by user"
-                )
-                break
-
             if success:
                 self.queue.update_item_status(
                     item.id,
@@ -93,6 +88,12 @@ class DownloadWorker(QThread):
                 )
                 self.track_completed.emit(item.id, True, file_path or "")
                 success_count += 1
+            elif self._cancelled:
+                self.queue.update_item_status(
+                    item.id,
+                    DownloadStatus.CANCELLED,
+                    error_message="Cancelled by user"
+                )
             else:
                 self.queue.update_item_status(
                     item.id,
@@ -131,87 +132,79 @@ class DownloadWorker(QThread):
         # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
 
-        query = f"{item.artist} - {item.track}"
-        filename = query.replace("/", "-").replace("\\", "-")
-
-        cmd = [
-            "yt-dlp",
-            f"ytsearch1:{query}",
-            "-x",
-            "--audio-format", audio_format,
-            "-o", os.path.join(output_dir, f"{filename}.%(ext)s"),
-            "--no-playlist",
-            "--quiet",
-            "--progress"
-        ]
-        cmd.extend(build_extra_ytdlp_args(self.config))
-
+        track_data = self._track_data(item)
         try:
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            result = run_download(
+                track_data,
+                output_dir,
+                audio_format,
+                self.config,
+                popen_hook=self._set_process,
+                cancel_check=lambda: self._cancelled,
             )
-
-            # Wait for completion
-            stdout, stderr = process.communicate()
-
-            if process.returncode == 0:
-                # Try to find the downloaded file
-                expected_path = os.path.join(output_dir, f"{filename}.{audio_format}")
-                if os.path.exists(expected_path):
-                    # Embed metadata if enabled
-                    self._embed_metadata(expected_path, item)
-                    return True, expected_path, None
-
-                # Try to find with any extension
-                for ext in [audio_format, "mp3", "m4a", "opus", "webm"]:
-                    check_path = os.path.join(output_dir, f"{filename}.{ext}")
-                    if os.path.exists(check_path):
-                        self._embed_metadata(check_path, item)
-                        return True, check_path, None
-
-                return True, None, None
-            else:
-                error_msg = stderr.strip() if stderr else "Download failed"
-                return False, None, error_msg
-
-        except FileNotFoundError:
-            return False, None, "yt-dlp not found. Please install yt-dlp."
         except Exception as e:
             return False, None, str(e)
+        finally:
+            self._process = None
+
+        if result.success and result.path:
+            self._embed_metadata(result.path, item)
+        return result.success, result.path, result.error
+
+    @staticmethod
+    def _track_data(item: QueueItem) -> dict:
+        """Return the item's source track dict with its artist and track names applied.
+
+        @param item: Queue item being downloaded.
+        """
+        track_data = dict(item.track_data or {})
+        track_data["artist"] = item.artist
+        track_data["track"] = item.track
+        return track_data
+
+    def _set_process(self, process):
+        """Remember the running yt-dlp process so cancel() can stop it.
+
+        @param process: The Popen started by run_download.
+        """
+        self._process = process
 
     def _embed_metadata(self, file_path: str, item: QueueItem):
-        """Embed metadata into the downloaded file."""
+        """Embed metadata from the item's full track dict into the downloaded file.
+
+        @param file_path: Path of the downloaded audio file.
+        @param item: Queue item whose track_data supplies the tags.
+        """
         if not self.config.get("enable_metadata_embedding", True):
             return
 
         try:
             from downloader.metadata import embed_track_metadata
 
-            track_data = {
-                "artist": item.artist,
-                "track": item.track
-            }
             template = self.config.get("metadata_template", "basic")
             enable_musicbrainz = self.config.get("enable_musicbrainz_lookup", True)
 
             embed_track_metadata(
                 file_path,
-                track_data,
+                self._track_data(item),
                 template=template,
-                allow_musicbrainz=enable_musicbrainz
+                allow_musicbrainz=enable_musicbrainz,
+                config=self.config,
             )
         except ImportError:
-            pass
-        except Exception:
-            pass
+            log_warning("Metadata embedding module not available, skipping metadata embedding")
+        except Exception as e:
+            log_error(f"Metadata embedding failed for {file_path}: {e}")
 
     def cancel(self):
-        """Cancel the download process."""
+        """Cancel the download process and terminate a running yt-dlp."""
         self._cancelled = True
+        process = self._process
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                pass
 
     def pause(self):
         """Pause the download process."""

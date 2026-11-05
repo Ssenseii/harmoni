@@ -1,19 +1,169 @@
 """Spotify OAuth dialog for authentication."""
 
+import errno
 import webbrowser
+from html import escape
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.parse
-from threading import Thread
-from typing import Optional
+from typing import Callable, Optional
 
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QLineEdit, QProgressBar, QMessageBox,
     QGroupBox, QFormLayout
 )
-from PySide6.QtCore import Signal, QThread
+from PySide6.QtCore import Qt, Signal, QThread, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 
-from spotify_api.auth import SpotifyPKCEAuth, extract_code_from_redirect_url, PKCEPair
+from spotify_api.auth import (
+    DEFAULT_SPOTIFY_REDIRECT_URI,
+    SpotifyPKCEAuth,
+    PKCEPair,
+    check_spotify_credentials,
+    extract_code_from_redirect_url,
+)
+
+_PORT_BUSY_ERRNOS = {errno.EADDRINUSE, errno.EACCES, 10048, 10013}
+
+
+SPOTIFY_DASHBOARD_URL = "https://developer.spotify.com/dashboard"
+
+
+class SpotifySetupDialog(QDialog):
+    """Step-by-step guide for creating the Spotify app HARMONI needs before it can connect."""
+
+    def __init__(self, redirect_uri: str, parent=None):
+        """Build the guide.
+
+        @param redirect_uri: Redirect URI the user must add to their Spotify app.
+        @param parent: Optional Qt parent.
+        """
+        super().__init__(parent)
+        self.setWindowTitle("Set Up Spotify")
+        self.setMinimumWidth(560)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+
+        title = QLabel("Create your own Spotify app")
+        title.setObjectName("section")
+        layout.addWidget(title)
+        intro = QLabel(
+            "Spotify only lets HARMONI read your playlists through an app you own. "
+            "It's free and takes about two minutes."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        dashboard_btn = QPushButton("Open Spotify Dashboard")
+        dashboard_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(SPOTIFY_DASHBOARD_URL)))
+        self._add_step(layout, 1, "Open the Spotify Developer Dashboard and log in with your Spotify account.", dashboard_btn)
+        self._add_step(layout, 2, "Click Create app. Any name and description will do. Tick Web API.")
+
+        uri_row = QHBoxLayout()
+        uri_field = QLineEdit(redirect_uri)
+        uri_field.setReadOnly(True)
+        uri_row.addWidget(uri_field)
+        copy_btn = QPushButton("Copy")
+        copy_btn.setObjectName("secondary")
+
+        def copy_uri():
+            QApplication.clipboard().setText(redirect_uri)
+            copy_btn.setText("Copied")
+
+        copy_btn.clicked.connect(copy_uri)
+        uri_row.addWidget(copy_btn)
+        self._add_step(layout, 3, "Under Redirect URIs, paste this address exactly, click Add, then Save.", uri_row)
+
+        self._add_step(layout, 4, "Open User Management in your new app and add the email of every Spotify account that will use HARMONI, including your own.")
+        self._add_step(layout, 5, "Open the app's Settings page and copy the Client ID.")
+        self._add_step(layout, 6, "Paste the Client ID into HARMONI's Settings, click Save, then come back here and click Connect.")
+
+        note = QLabel("The Spotify account that owns the app needs Premium. Spotify requires it for apps in Development Mode.")
+        note.setObjectName("subtitle")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.setObjectName("secondary")
+        close_btn.clicked.connect(self.reject)
+        buttons.addWidget(close_btn)
+        settings_btn = QPushButton("Open HARMONI Settings")
+        settings_btn.clicked.connect(self.accept)
+        buttons.addWidget(settings_btn)
+        layout.addLayout(buttons)
+
+    @staticmethod
+    def _add_step(layout, number: int, text: str, extra=None):
+        """Add one numbered step, with an optional button or row under it.
+
+        @param layout: Layout the step is added to.
+        @param number: Step number shown to the user.
+        @param text: What the user does in this step.
+        @param extra: Optional widget or layout placed under the text.
+        """
+        label = QLabel(f"<b>{number}.</b> {escape(text)}")
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        if extra is None:
+            return
+        row = QHBoxLayout()
+        row.setContentsMargins(20, 0, 0, 0)
+        if isinstance(extra, QHBoxLayout):
+            row.addLayout(extra)
+        else:
+            row.addWidget(extra)
+            row.addStretch()
+        layout.addLayout(row)
+
+
+def prompt_spotify_setup(parent, redirect_uri: str) -> bool:
+    """Show the Spotify setup guide and return True when the user picks Open HARMONI Settings.
+
+    @param parent: Widget that owns the dialog.
+    @param redirect_uri: Redirect URI the user must add to their Spotify app.
+    """
+    return SpotifySetupDialog(redirect_uri or DEFAULT_SPOTIFY_REDIRECT_URI, parent).exec() == QDialog.Accepted
+
+
+class FunctionThread(QThread):
+    """Run one blocking callable off the UI thread and report its result or exception."""
+
+    succeeded = Signal(object)
+    failed = Signal(object)
+
+    _alive = set()
+
+    def __init__(self, fn: Callable[[], object]):
+        """Wrap the callable. The thread has no parent and keeps itself alive until it finishes.
+
+        @param fn: Zero-argument callable to run on the worker thread.
+        """
+        super().__init__()
+        self._fn = fn
+        self.finished.connect(self._release)
+
+    def start(self, *args):
+        """Start the thread and hold a reference until it finishes.
+
+        @param args: Passed through to QThread.start.
+        """
+        FunctionThread._alive.add(self)
+        super().start(*args)
+
+    def run(self):
+        """Call the wrapped function and emit its outcome."""
+        try:
+            result = self._fn()
+        except Exception as e:
+            self.failed.emit(e)
+        else:
+            self.succeeded.emit(result)
+
+    def _release(self):
+        """Drop the self reference once the thread has finished."""
+        FunctionThread._alive.discard(self)
 
 
 class CallbackHandler(BaseHTTPRequestHandler):
@@ -25,6 +175,19 @@ class CallbackHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         """Handle GET request (OAuth callback)."""
+        path, _, query = self.path.partition("?")
+        if path != getattr(self.server, "expected_path", "/callback"):
+            self.send_response(404)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"Not Found")
+            return
+
+        params = urllib.parse.parse_qs(query)
+        error = (params.get("error") or [""])[0]
+        if not error and not params.get("code"):
+            error = "no authorization code in the redirect"
+
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.end_headers()
@@ -60,10 +223,25 @@ class CallbackHandler(BaseHTTPRequestHandler):
         </body>
         </html>
         """
+        if error:
+            html = (
+                html.replace("#1db954", "#e74c3c")
+                .replace("Authentication Successful!", "Authentication Failed")
+                .replace(
+                    "You can close this window and return to HARMONI.",
+                    f"Spotify reported: {escape(error)}. Return to HARMONI for details.",
+                )
+            )
         self.wfile.write(html.encode())
 
-        # Store the full path for code extraction
         self.server.callback_path = self.path
+
+
+class _CallbackHTTPServer(HTTPServer):
+    """Loopback server that refuses to share a port another process already holds."""
+
+    allow_reuse_address = False
+    allow_reuse_port = False
 
 
 class CallbackServerThread(QThread):
@@ -72,18 +250,26 @@ class CallbackServerThread(QThread):
     callback_received = Signal(str)  # Emits the callback URL path
     server_error = Signal(str)  # Emits error message
 
-    def __init__(self, port: int = 8888, parent=None):
+    def __init__(self, port: int = 8888, path: str = "/callback", parent=None):
         super().__init__(parent)
         self.port = port
+        self.path = path
         self.server = None
         self._running = True
+
+    def bind(self):
+        """Bind the loopback server now, raising OSError when the port is unavailable."""
+        server = _CallbackHTTPServer(("127.0.0.1", self.port), CallbackHandler)
+        server.expected_path = self.path
+        server.callback_path = None
+        server.timeout = 0.2
+        self.server = server
 
     def run(self):
         """Run the callback server."""
         try:
-            self.server = HTTPServer(("127.0.0.1", self.port), CallbackHandler)
-            self.server.callback_path = None
-            self.server.timeout = 1
+            if self.server is None:
+                self.bind()
 
             while self._running:
                 self.server.handle_request()
@@ -96,24 +282,31 @@ class CallbackServerThread(QThread):
         except OSError as e:
             self.server_error.emit(f"Could not start callback server: {e}")
         finally:
-            if self.server:
-                self.server.server_close()
+            self.close_server()
 
     def stop(self):
         """Stop the callback server."""
         self._running = False
+
+    def close_server(self):
+        """Release the listening socket if it is still open."""
+        server, self.server = self.server, None
+        if server is not None:
+            server.server_close()
 
 
 class SpotifyOAuthDialog(QDialog):
     """Dialog for Spotify OAuth authentication."""
 
     auth_completed = Signal(bool, str)  # success, message
+    open_settings_requested = Signal()
 
     def __init__(self, config: dict, parent=None):
         super().__init__(parent)
         self.config = config
         self.auth = SpotifyPKCEAuth(config)
         self.callback_thread = None
+        self._exchange_thread: Optional[FunctionThread] = None
         self.pkce_pair: Optional[PKCEPair] = None
         self.state: Optional[str] = None
 
@@ -183,6 +376,13 @@ class SpotifyOAuthDialog(QDialog):
 
     def _start_oauth(self):
         """Start the OAuth flow."""
+        creds = check_spotify_credentials(self.config)
+        if not creds.get("ok"):
+            if prompt_spotify_setup(self, creds.get("redirect_uri")):
+                self.open_settings_requested.emit()
+                self.reject()
+            return
+
         try:
             # Begin OAuth flow
             flow = self.auth.begin_oauth_flow(show_dialog=True)
@@ -190,25 +390,35 @@ class SpotifyOAuthDialog(QDialog):
             self.state = flow["state"]
             auth_url = flow["auth_url"]
 
-            # Get port from redirect URI
-            redirect_uri = self.config.get("spotify_redirect_uri", "http://127.0.0.1:8888/callback")
-            port = 8888
-            try:
-                from urllib.parse import urlparse
-                parsed = urlparse(redirect_uri)
-                if parsed.port:
-                    port = parsed.port
-            except Exception:
-                pass
+            redirect_uri = self.config.get("spotify_redirect_uri") or DEFAULT_SPOTIFY_REDIRECT_URI
+            parsed = urllib.parse.urlparse(redirect_uri)
+            port = parsed.port or 8888
+            path = parsed.path or "/"
 
-            # Start callback server
-            self.callback_thread = CallbackServerThread(port)
-            self.callback_thread.callback_received.connect(self._on_callback_received)
-            self.callback_thread.server_error.connect(self._on_server_error)
-            self.callback_thread.start()
+            self._stop_callback_server()
+            thread = CallbackServerThread(port, path)
+            port_message = ""
+            try:
+                thread.bind()
+            except OSError as e:
+                if e.errno in _PORT_BUSY_ERRNOS or getattr(e, "winerror", None) in _PORT_BUSY_ERRNOS:
+                    port_message = f"Port {port} is already in use, so HARMONI cannot catch the Spotify redirect."
+                else:
+                    port_message = f"Could not start the callback server on port {port}: {e}"
+            else:
+                thread.callback_received.connect(self._on_callback_received)
+                thread.server_error.connect(self._on_server_error)
+                self.callback_thread = thread
+                thread.start()
 
             # Open browser
             webbrowser.open(auth_url)
+
+            if port_message:
+                self._on_server_error(
+                    port_message + "\nAfter approving in the browser, copy the full address from the address bar."
+                )
+                return
 
             # Update UI
             self.start_btn.setEnabled(False)
@@ -239,7 +449,9 @@ class SpotifyOAuthDialog(QDialog):
         self._process_callback_url(url)
 
     def _process_callback_url(self, callback_url: str):
-        """Process the OAuth callback URL."""
+        """Validate the OAuth callback URL and exchange its code for a token off the UI thread."""
+        if self._exchange_thread is not None and self._exchange_thread.isRunning():
+            return
         try:
             # Extract code from URL
             params = extract_code_from_redirect_url(callback_url)
@@ -256,37 +468,79 @@ class SpotifyOAuthDialog(QDialog):
             if self.state and returned_state != self.state:
                 raise RuntimeError("State mismatch - possible CSRF attack")
 
-            # Exchange code for token
-            self.status_label.setText("Exchanging code for access token...")
-
             if not self.pkce_pair:
                 raise RuntimeError("PKCE pair not found - please restart the login process")
 
-            token = self.auth.exchange_code_for_token(
-                code=code,
-                code_verifier=self.pkce_pair.code_verifier
-            )
-
-            # Success!
-            self.progress.hide()
-            self.status_label.setText("Successfully connected to Spotify!")
-            self.status_label.setStyleSheet("color: #1db954;")
-            self.auth_completed.emit(True, "Successfully connected to Spotify")
-
-            # Close dialog after brief delay
-            from PySide6.QtCore import QTimer
-            QTimer.singleShot(1500, self.accept)
-
         except Exception as e:
-            self.progress.hide()
-            self.start_btn.setEnabled(True)
-            self.status_label.setText(f"Authentication failed: {e}")
-            self.status_label.setStyleSheet("color: #e74c3c;")
-            self.auth_completed.emit(False, str(e))
+            self._show_failure(str(e))
+            return
+
+        self.status_label.setText("Exchanging code for access token...")
+        auth = self.auth
+        verifier = self.pkce_pair.code_verifier
+        self._exchange_thread = FunctionThread(
+            lambda: auth.exchange_code_for_token(code=code, code_verifier=verifier)
+        )
+        self._exchange_thread.succeeded.connect(self._on_exchange_succeeded)
+        self._exchange_thread.failed.connect(self._on_exchange_failed)
+        self._exchange_thread.start()
+
+    def _on_exchange_succeeded(self, _token):
+        """Report a successful token exchange and close shortly after.
+
+        @param _token: The TokenInfo saved by the exchange.
+        """
+        self.progress.hide()
+        self.status_label.setText("Successfully connected to Spotify!")
+        self.status_label.setStyleSheet("color: #1db954;")
+        self.auth_completed.emit(True, "Successfully connected to Spotify")
+        QTimer.singleShot(1500, self.accept)
+
+    def _on_exchange_failed(self, error):
+        """Report a failed token exchange.
+
+        @param error: The exception raised by the exchange.
+        """
+        self._show_failure(str(error))
+
+    def _show_failure(self, message: str):
+        """Show an authentication failure and let the user try again.
+
+        @param message: Reason shown to the user.
+        """
+        self.progress.hide()
+        self.start_btn.setEnabled(True)
+        self.status_label.setText(f"Authentication failed: {message}")
+        self.status_label.setStyleSheet("color: #e74c3c;")
+        self.auth_completed.emit(False, message)
+
+    def _stop_callback_server(self):
+        """Stop the callback thread, wait for it, and free its port."""
+        thread, self.callback_thread = self.callback_thread, None
+        if thread is None:
+            return
+        thread.stop()
+        if thread.isRunning():
+            thread.wait(3000)
+        thread.close_server()
+
+    def _detach_exchange_thread(self):
+        """Stop a running token exchange from calling back into this dialog."""
+        thread, self._exchange_thread = self._exchange_thread, None
+        if thread is not None and thread.isRunning():
+            thread.succeeded.disconnect(self._on_exchange_succeeded)
+            thread.failed.disconnect(self._on_exchange_failed)
+
+    def done(self, result):
+        """Stop background work before the dialog closes with any result.
+
+        @param result: The QDialog result code.
+        """
+        self._stop_callback_server()
+        self._detach_exchange_thread()
+        super().done(result)
 
     def closeEvent(self, event):
         """Handle dialog close."""
-        if self.callback_thread and self.callback_thread.isRunning():
-            self.callback_thread.stop()
-            self.callback_thread.wait(2000)
+        self._stop_callback_server()
         super().closeEvent(event)

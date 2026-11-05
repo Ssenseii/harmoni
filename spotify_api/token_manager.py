@@ -4,6 +4,9 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+from utils.jsonio import write_json_atomic
+from utils.logger import log_warning
+
 
 def _get_default_cache_path():
     """Resolve token cache path relative to the app directory, not the working directory."""
@@ -86,7 +89,8 @@ class TokenManager:
         try:
             with open(self.cache_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except Exception:
+        except Exception as e:
+            log_warning(f"Could not read the Spotify token cache at {self.cache_path}: {e}")
             return None
 
         try:
@@ -97,7 +101,8 @@ class TokenManager:
                 refresh_token=data.get("refresh_token"),
                 scope=data.get("scope"),
             )
-        except Exception:
+        except Exception as e:
+            log_warning(f"The Spotify token cache at {self.cache_path} has an unexpected shape: {e}")
             return None
 
     def save(self, config: Dict[str, Any], token: TokenInfo) -> bool:
@@ -106,11 +111,10 @@ class TokenManager:
             return False
 
         try:
-            self.ensure_cache_dir()
-            with open(self.cache_path, "w", encoding="utf-8") as f:
-                json.dump(token.to_dict(), f, indent=2)
+            write_json_atomic(self.cache_path, token.to_dict(), mode=0o600)
             return True
-        except Exception:
+        except Exception as e:
+            log_warning(f"Could not save the Spotify token cache to {self.cache_path}: {e}")
             return False
 
     def clear(self) -> bool:
@@ -118,7 +122,8 @@ class TokenManager:
             if os.path.exists(self.cache_path):
                 os.remove(self.cache_path)
             return True
-        except Exception:
+        except Exception as e:
+            log_warning(f"Could not remove the Spotify token cache at {self.cache_path}: {e}")
             return False
 
     @staticmethod

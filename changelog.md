@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Spotify setup guidance**: When Spotify is not configured, a step-by-step guide opens the Spotify dashboard, lets you copy the redirect URI, and takes you to the Client ID field, instead of silently switching to Exportify.
+- **Sidebar quick actions**: Start Downloads, Retry Failed and Open Music Folder are always one click away, with queue counts.
+- **Failure reasons**: Failed downloads show why they failed in the queue, including when a track is age-restricted and needs browser cookies.
+- **Open any public Spotify link**: Paste a playlist, album or track link on the Spotify page and it loads without a Spotify developer app. Playlists you follow but don't own load the same way. Spotify's public page lists up to 100 tracks and no album names.
+- **Notice bar**: Confirmations like "added to queue" and "settings saved" show in a bar that fades out instead of a popup you have to close.
+- **CI tests and secret scanning**: Every push and pull request runs the unit tests and a gitleaks scan, and release builds only start when both pass. A gitleaks pre-commit hook is included.
+- **Example data files**: `data/tracks.example.json` and `data/playlists.example.json` show the expected formats.
+
+### Fixed
+- **Spotify connection**: The automatic Exportify fallback is gone. Errors say what went wrong, the client is updated for the February 2026 Web API changes, and playlists you follow but do not own are marked as unreadable through the API, with a pointer to Exportify, instead of failing when you open them.
+- **Downloads**: Cancel now stops the running download. The failed downloads list and resume work again. YouTube results are matched against the track duration so wrong versions are picked less often.
+- **Downloads with cookies**: Signed-in YouTube needs a JavaScript runtime, so HARMONI now passes Deno or Node 20+ to yt-dlp automatically. Without one, every cookie download failed. Failed searches also retry with other YouTube clients and a simpler title.
+- **Settings**: Scrolling no longer changes the format and template boxes, and the save bar stays visible at the bottom.
+- **Data files**: JSON data is written atomically, so a crash can no longer leave a half-written file. Data and config paths are anchored to the app folder, so they no longer depend on the folder you launch from.
+- **Startup**: The app starts faster and no longer flashes console windows on Windows.
+- **Spotify and queue UI**: Playlists open with a single click, adding tracks says that downloads wait for Start Downloads, and selected rows no longer show Windows 11 accent bars.
+- **Release builds**: Personal data from `data/` is no longer bundled into the release binaries, and a tag build fails if `version.py` does not match the tag.
+
+### Why
+- These changes address Ssenseii/harmoni#42, #44, #45 and #46.
+- A silent Exportify fallback hid the real Spotify error, so users could not tell what to fix.
+- Cancel, resume and the failed list are basic controls for long batch downloads, and they did not work reliably.
+- Personal playlists and download history were tracked in git and shipped inside release builds. They are now ignored, and CI scans for secrets so tokens cannot be committed again.
+
 ## [1.2.0] - 2026-07-30
 
 ### Added

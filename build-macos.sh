@@ -75,7 +75,6 @@ pyinstaller \
     --add-binary "bin/ffprobe:bin" \
     --add-binary "bin/yt-dlp:bin" \
     --add-data "config.json.example:." \
-    --add-data "data:data" \
     gui_main.py
 
 # Create DMG

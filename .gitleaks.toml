@@ -1,0 +1,15 @@
+title = "HARMONI gitleaks config"
+
+[extend]
+useDefault = true
+
+# These December 2025 commits tracked data/spotify_tokens.json and a hardcoded
+# Spotify client ID. Treat those values as burned. Published history is
+# not rewritten, so a full-history scan skips only these commits.
+[allowlist]
+description = "Historical commits with burned Spotify credentials"
+commits = [
+  "f0c0277b3afb32d9b4d94797e521bf66744746ae",
+  "419a1919dc7576029ec6ed8379c1997521acfcca",
+  "b50c6348a5a3194c108d539b640a4f36bb594173",
+]

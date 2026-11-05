@@ -6,36 +6,34 @@ if THIS_DIR not in os.sys.path:
     os.sys.path.insert(0, THIS_DIR)
     os.sys.path.insert(0, os.path.dirname(THIS_DIR))
 
-from gui.workers.spotify_worker import extract_artist_names
+from spotify_api.data_loader import SpotifyDataLoader
+
+normalize = SpotifyDataLoader._normalize_artist_list
 
 
-class TestExtractArtistNames(unittest.TestCase):
+class TestArtistNames(unittest.TestCase):
     def test_single_artist(self):
-        track_obj = {"artists": [{"name": "Artist A"}]}
-        self.assertEqual(extract_artist_names(track_obj), "Artist A")
+        self.assertEqual(normalize([{"name": "Artist A"}]), "Artist A")
 
     def test_multiple_artists_are_joined(self):
-        track_obj = {"artists": [{"name": "Artist A"}, {"name": "Artist B"}]}
-        self.assertEqual(extract_artist_names(track_obj), "Artist A, Artist B")
+        self.assertEqual(normalize([{"name": "Artist A"}, {"name": "Artist B"}]), "Artist A, Artist B")
 
-    def test_no_artists_falls_back_to_unknown(self):
-        track_obj = {"artists": []}
-        self.assertEqual(extract_artist_names(track_obj), "Unknown Artist")
+    def test_no_artists_is_empty(self):
+        self.assertEqual(normalize([]), "")
 
-    def test_missing_artists_key_falls_back_to_unknown(self):
-        self.assertEqual(extract_artist_names({}), "Unknown Artist")
+    def test_missing_artists_is_empty(self):
+        self.assertEqual(normalize(None), "")
 
     def test_artist_with_none_name_does_not_crash(self):
-        # Regression test: Spotify can return an artist entry with "name": None
-        # (e.g. removed/unavailable artist). dict.get("name", "") does not
-        # substitute for an explicit None value, so ", ".join(...) used to
-        # raise: "sequence item 0: expected str instance, NoneType found".
-        track_obj = {"artists": [{"name": None}]}
-        self.assertEqual(extract_artist_names(track_obj), "Unknown Artist")
+        # Spotify can return an artist entry with "name": None for removed or unavailable artists.
+        self.assertEqual(normalize([{"name": None}]), "")
 
     def test_mix_of_none_and_valid_names(self):
-        track_obj = {"artists": [{"name": None}, {"name": "Artist B"}]}
-        self.assertEqual(extract_artist_names(track_obj), "Artist B")
+        self.assertEqual(normalize([{"name": None}, {"name": "Artist B"}]), "Artist B")
+
+    def test_track_without_artist_names_is_dropped(self):
+        track = {"id": "t1", "name": "Song", "artists": [{"name": None}]}
+        self.assertIsNone(SpotifyDataLoader._normalize_track(track))
 
 
 if __name__ == "__main__":

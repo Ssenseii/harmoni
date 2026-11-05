@@ -4,6 +4,7 @@ import json
 import questionary
 from utils.logger import log_info, log_success, log_error
 from utils.ytdlp_args import build_extra_ytdlp_args
+from utils.system import hidden_subprocess_kwargs
 
 def get_youtube_info(url):
     """
@@ -13,7 +14,8 @@ def get_youtube_info(url):
         result = subprocess.run(
             ["yt-dlp", "-j", "--flat-playlist", url],
             capture_output=True,
-            text=True
+            text=True,
+            **hidden_subprocess_kwargs()
         )
         if result.returncode != 0:
             log_error(f"Failed to fetch info for {url}")
@@ -56,6 +58,7 @@ def download_from_link(url, output_dir, audio_format, config=None):
     cmd = [
         "yt-dlp",
         url,
+        "--no-playlist",
         "-x", "--audio-format", audio_format,
         "-o", os.path.join(output_dir, "%(title)s.%(ext)s")
     ]

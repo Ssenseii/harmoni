@@ -8,12 +8,36 @@ from PySide6.QtWidgets import (
     QSpacerItem, QSizePolicy, QScrollArea, QFrame,
     QProgressBar
 )
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 
 from config import save_config, validate_config, DEFAULT_CONFIG, load_config
+from gui.notices import notify
 from gui.styles import COLORS
+from gui.workers.ytdlp_update_worker import YtdlpStatusWorker
 from utils.ffmpeg import check_ffmpeg_available
 from tools.ytdlp_update_checker import check_ytdlp_updates
+
+
+class ScrollSafeComboBox(QComboBox):
+    """A combo box that only reacts to the mouse wheel after it is clicked, so scrolling the page never changes it."""
+
+    def __init__(self, parent=None):
+        """Create the combo box.
+
+        @param parent: Optional Qt parent.
+        """
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def wheelEvent(self, event):
+        """Pass the wheel to the page unless the box has focus.
+
+        @param event: The wheel event.
+        """
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
 
 
 class SettingsView(QWidget):
@@ -26,10 +50,12 @@ class SettingsView(QWidget):
         self.config = config
         self.ffmpeg_worker = None
         self.ytdlp_worker = None
+        self.ytdlp_status_worker = None
         self._setup_ui()
         self._load_values()
         self._check_ffmpeg_status()
-        self._check_ytdlp_status()
+        # Start the yt-dlp probe after construction so the window can show first.
+        QTimer.singleShot(0, self._check_ytdlp_status)
 
     def _setup_ui(self):
         """Set up the settings UI."""
@@ -38,6 +64,7 @@ class SettingsView(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
 
         scroll = QScrollArea()
+        self._scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
 
@@ -185,7 +212,7 @@ class SettingsView(QWidget):
         format_label = QLabel("Audio format")
         format_label.setObjectName("muted")
         output_layout.addWidget(format_label)
-        self.format_combo = QComboBox()
+        self.format_combo = ScrollSafeComboBox()
         self.format_combo.addItems(["mp3", "flac", "wav", "aac", "ogg", "m4a"])
         output_layout.addWidget(self.format_combo)
 
@@ -212,10 +239,11 @@ class SettingsView(QWidget):
 
         help_label = QLabel(
             "To get a Spotify Client ID:\n"
-            "1. Go to developer.spotify.com/dashboard\n"
-            "2. Create a new app\n"
-            "3. Add http://127.0.0.1:8888/callback to Redirect URIs\n"
-            "4. Copy the Client ID here"
+            "1. Go to developer.spotify.com/dashboard and create an app (tick Web API)\n"
+            "2. Add the Redirect URI above to the app's Redirect URIs\n"
+            "3. In User Management, add the email of every Spotify account that will log in\n"
+            "4. Copy the app's Client ID here and click Save\n"
+            "The Spotify account that owns the app needs Premium."
         )
         help_label.setObjectName("subtitle")
         help_label.setWordWrap(True)
@@ -271,7 +299,7 @@ class SettingsView(QWidget):
         template_label = QLabel("Template")
         template_label.setObjectName("muted")
         metadata_layout.addWidget(template_label)
-        self.template_combo = QComboBox()
+        self.template_combo = ScrollSafeComboBox()
         self.template_combo.addItems(["basic", "comprehensive", "dj-mix"])
         metadata_layout.addWidget(self.template_combo)
 
@@ -301,8 +329,13 @@ class SettingsView(QWidget):
         # Spacer
         layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
-        # Buttons
-        buttons_layout = QHBoxLayout()
+        scroll.setWidget(scroll_widget)
+        main_layout.addWidget(scroll, 1)
+
+        save_bar = QFrame()
+        save_bar.setObjectName("card")
+        buttons_layout = QHBoxLayout(save_bar)
+        buttons_layout.setContentsMargins(30, 12, 30, 12)
         buttons_layout.addStretch()
 
         reset_btn = QPushButton("Reset to Defaults")
@@ -314,10 +347,12 @@ class SettingsView(QWidget):
         save_btn.clicked.connect(self._save_settings)
         buttons_layout.addWidget(save_btn)
 
-        layout.addLayout(buttons_layout)
+        main_layout.addWidget(save_bar)
 
-        scroll.setWidget(scroll_widget)
-        main_layout.addWidget(scroll)
+    def focus_spotify_client_id(self):
+        """Scroll to the Spotify Client ID field and put the cursor in it."""
+        self._scroll.ensureWidgetVisible(self.client_id_input)
+        self.client_id_input.setFocus()
 
     def _load_values(self):
         """Load current config values into the form."""
@@ -401,52 +436,26 @@ class SettingsView(QWidget):
         self.ffmpeg_refresh_btn.setEnabled(True)
 
         # Show result
-        if success:
-            QMessageBox.information(self, "Installation Complete", message)
-            self._check_ffmpeg_status()
-        else:
-            QMessageBox.warning(self, "Installation Failed", message)
-            self._check_ffmpeg_status()
+        notify(message, "success" if success else "warning")
+        self._check_ffmpeg_status()
 
         # Clean up worker
         self.ffmpeg_worker = None
 
     def _check_ytdlp_status(self):
-        """Check yt-dlp installation and version status."""
-        import shutil
-        import subprocess
+        """Start a background check of the yt-dlp installation and version."""
+        if self.ytdlp_status_worker is not None and self.ytdlp_status_worker.isRunning():
+            return
+        self.ytdlp_status_worker = YtdlpStatusWorker(self.config.get("ytdlp_path", ""), self)
+        self.ytdlp_status_worker.status_ready.connect(self._apply_ytdlp_status)
+        self.ytdlp_status_worker.start()
 
-        version = None
-        found_path = None
+    def _apply_ytdlp_status(self, found_path: str, version: str):
+        """Show the yt-dlp status found by the background check.
 
-        # Check custom path from config first
-        custom_path = self.config.get("ytdlp_path", "")
-        if custom_path and os.path.isfile(custom_path):
-            found_path = custom_path
-            try:
-                result = subprocess.run(
-                    [custom_path, "--version"],
-                    capture_output=True, text=True, timeout=3
-                )
-                if result.returncode == 0:
-                    version = result.stdout.strip()
-            except Exception:
-                pass
-        else:
-            # Check PATH
-            ytdlp_bin = shutil.which("yt-dlp")
-            if ytdlp_bin:
-                found_path = ytdlp_bin
-                try:
-                    result = subprocess.run(
-                        [ytdlp_bin, "--version"],
-                        capture_output=True, text=True, timeout=3
-                    )
-                    if result.returncode == 0:
-                        version = result.stdout.strip()
-                except Exception:
-                    pass
-
+        @param found_path: Path of the yt-dlp binary, or an empty string when none was found.
+        @param version: Reported yt-dlp version, or an empty string when unknown.
+        """
         if found_path and version:
             self.ytdlp_status_icon.setStyleSheet("color: #4caf50; font-size: 14px;")
             self.ytdlp_status_label.setText(f"Installed: {version} ({found_path})")
@@ -549,9 +558,9 @@ class SettingsView(QWidget):
                 except Exception:
                     pass
 
-            QMessageBox.information(self, "Success", message)
+            notify(message, "success")
         else:
-            QMessageBox.warning(self, "Install Failed", message)
+            notify(message, "warning")
 
         self.ytdlp_worker = None
         self._check_ytdlp_status()
@@ -652,7 +661,7 @@ class SettingsView(QWidget):
             self.config = load_config()
             self._load_values()  # Refresh UI to show saved values
             self.config_saved.emit()
-            QMessageBox.information(self, "Success", "Settings saved successfully!")
+            notify("Settings saved.", "success")
 
         except ValueError as e:
             QMessageBox.warning(self, "Error", f"Invalid value: {e}")
@@ -677,6 +686,7 @@ class SettingsView(QWidget):
         )
         if reply == QMessageBox.Yes:
             for key, value in DEFAULT_CONFIG.items():
-                self.config[key] = value
+                if not key.startswith("spotify_"):
+                    self.config[key] = value
             self._load_values()
-            QMessageBox.information(self, "Reset", "Settings reset to defaults.")
+            notify("Settings reset to defaults. Click Save to keep them.", "success")

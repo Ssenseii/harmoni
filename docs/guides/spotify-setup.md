@@ -5,7 +5,8 @@ HARMONI can load tracks directly from your Spotify account (playlists + liked so
 ## What You Need
 
 - A Spotify account
-- A Spotify Developer app with a **Client ID**
+- Your own Spotify Developer app with a **Client ID**
+- Spotify Premium on the account that owns the Developer app
 - Redirect URI: `http://127.0.0.1:8888/callback`
 
 > **Note:** This project uses Authorization Code + PKCE, so **no client secret is required**.
@@ -21,6 +22,14 @@ HARMONI can load tracks directly from your Spotify account (playlists + liked so
    http://127.0.0.1:8888/callback
    ```
 4. Copy your **Client ID**
+
+## Step 1b: Allow Your Users
+
+New Spotify apps run in **Development Mode**. In that mode:
+
+- The app owner must have **Spotify Premium**.
+- Only listed users can log in. Open the app in the dashboard, go to **User Management**, and add every person who will use HARMONI by their Spotify account email. Add yourself too.
+- The app can only read playlists that belong to the logged-in user. Other people's public playlists return HTTP 403.
 
 ---
 
@@ -67,6 +76,17 @@ Add your Client ID to `config.json`:
    - If the port is in use, you'll be asked to paste the redirect URL manually
 
 Tokens are cached at `data/spotify_tokens.json` when enabled.
+
+In the desktop app, **Connect to Spotify** checks for a Client ID first. Without one it shows these setup steps and an **Open Settings** button instead of opening the browser.
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| Spotify shows `redirect_uri: Not matching configuration` | The Redirect URI in your Spotify app must be exactly `http://127.0.0.1:8888/callback`, and `spotify_client_id` must be your own app's Client ID |
+| HTTP 403 after logging in | Add your Spotify email under User Management, make sure the app owner has Premium, and only load your own playlists |
+| HTTP 429 | Spotify is rate limiting. Wait a minute and try again |
+| `Port 8888 is already in use` | Another program holds the port. Approve in the browser, then paste the full address from the address bar into the manual entry box |
 
 ---
 

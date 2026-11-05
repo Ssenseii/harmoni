@@ -1,4 +1,4 @@
-FROM python:3.9-slim
+FROM python:3.12-slim
 
 # Prevent Python from writing .pyc files and ensure logs flush immediately
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -33,9 +33,6 @@ RUN mkdir -p /app/data /app/data/exportify /app/music /app/export \
     && chown -R appuser:appuser /app
 
 USER appuser
-
-# Reserved for potential future web interface
-EXPOSE 8000
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python", "main.py"]

@@ -53,6 +53,7 @@ All settings are stored in `config.json` at the project root.
 | `audio_format` | string | `"mp3"` | mp3, wav, flac, aac, ogg, m4a | Default audio format |
 | `sleep_between` | int | `5` | 0-60 | Seconds between downloads (rate limiting) |
 | `average_download_time` | int | `20` | 1-300 | Estimated time per track (for ETA) |
+| `match_duration_tolerance` | int | `15` | 0-120 | Seconds a YouTube result may differ from the track length when the length is known |
 
 ### Retry Settings
 
@@ -80,6 +81,7 @@ All settings are stored in `config.json` at the project root.
 | `spotify_scopes` | array | (see above) | Requested permissions |
 | `spotify_cache_tokens` | bool | `true` | Cache OAuth tokens |
 | `spotify_auto_refresh` | bool | `true` | Auto-refresh expired tokens |
+| `spotify_max_retry_after` | int | `30` | Longest wait in seconds when Spotify rate limits a request (1-3600) |
 
 ---
 

@@ -1,7 +1,8 @@
-import json
 import os
 import sys
 from typing import Any, Dict, Optional
+
+from utils.jsonio import load_json, write_json_atomic
 
 
 def get_app_dir() -> str:
@@ -16,6 +17,8 @@ def get_app_dir() -> str:
 
 APP_DIR = get_app_dir()
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
+
+PATH_CONFIG_KEYS = ("tracks_file", "playlists_file", "output_dir", "exportify_watch_folder")
 
 # Default configuration values
 DEFAULT_CONFIG = {
@@ -37,6 +40,7 @@ DEFAULT_CONFIG = {
     "ytdlp_path": "",
     "ytdlp_extra_args": "",
     "ffmpeg_extra_args": "",
+    "match_duration_tolerance": 15,
 
     # Sync behavior
     "sync_write_tracks_json": True,
@@ -63,6 +67,7 @@ DEFAULT_CONFIG = {
     ],
     "spotify_cache_tokens": True,
     "spotify_auto_refresh": True,
+    "spotify_max_retry_after": 30,
 }
 
 # Profile definitions
@@ -141,6 +146,7 @@ CONFIG_SCHEMA = {
     "ytdlp_path": {"type": str, "required": False},
     "ytdlp_extra_args": {"type": str, "required": False},
     "ffmpeg_extra_args": {"type": str, "required": False},
+    "match_duration_tolerance": {"type": (int, float), "required": False, "min": 0, "max": 120},
 
     "sync_write_tracks_json": {"type": bool, "required": False},
     "auto_sync_enabled": {"type": bool, "required": False},
@@ -161,30 +167,75 @@ CONFIG_SCHEMA = {
     "spotify_scopes": {"type": list, "required": False, "element_type": str},
     "spotify_cache_tokens": {"type": bool, "required": False},
     "spotify_auto_refresh": {"type": bool, "required": False},
+    "spotify_max_retry_after": {"type": (int, float), "required": False, "min": 1, "max": 3600},
 }
 
 
+def resolve_app_path(p: str) -> str:
+    """Return p unchanged when it is absolute or empty, otherwise joined onto APP_DIR.
+
+    @param p: A file or directory path from the config.
+    """
+    if not p or os.path.isabs(p):
+        return p
+    return os.path.normpath(os.path.join(APP_DIR, p))
+
+
+def _read_raw_config() -> Dict[str, Any]:
+    """Return config.json as stored on disk, or an empty dict when it is missing or corrupt."""
+    data = load_json(CONFIG_PATH, {})
+    return data if isinstance(data, dict) else {}
+
+
 def load_config() -> Dict[str, Any]:
-    """Load configuration from file, applying defaults for missing fields."""
+    """Load configuration from file, applying defaults and resolving relative paths onto APP_DIR."""
     if not os.path.exists(CONFIG_PATH):
         raise FileNotFoundError(f"Config file {CONFIG_PATH} not found.")
 
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        config = json.load(f)
+    config = _read_raw_config()
 
     # Apply defaults for missing fields
     for key, value in DEFAULT_CONFIG.items():
         if key not in config:
             config[key] = value
 
+    for key in PATH_CONFIG_KEYS:
+        if isinstance(config.get(key), str):
+            config[key] = resolve_app_path(config[key])
+
     return config
 
 
+def _unresolve_paths(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of config with resolved path values put back in their stored relative form.
+
+    @param config: Config dict that may hold paths produced by load_config.
+    """
+    raw = _read_raw_config()
+    result = dict(config)
+    for key in PATH_CONFIG_KEYS:
+        value = result.get(key)
+        if not isinstance(value, str) or not os.path.isabs(value):
+            continue
+        for candidate in (raw.get(key), DEFAULT_CONFIG.get(key)):
+            if (
+                isinstance(candidate, str)
+                and candidate
+                and not os.path.isabs(candidate)
+                and os.path.normcase(resolve_app_path(candidate)) == os.path.normcase(os.path.normpath(value))
+            ):
+                result[key] = candidate
+                break
+    return result
+
+
 def save_config(config: Dict[str, Any]) -> bool:
-    """Save configuration to file."""
+    """Save configuration to file atomically, keeping relative paths relative.
+
+    @param config: The config dict to write.
+    """
     try:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
+        write_json_atomic(CONFIG_PATH, _unresolve_paths(config), indent=2)
         return True
     except Exception as e:
         raise IOError(f"Failed to save config: {e}")
@@ -308,9 +359,11 @@ def list_profiles() -> Dict[str, Dict[str, Any]]:
 
 
 def reset_to_defaults() -> tuple[bool, str]:
-    """Reset configuration to default values."""
+    """Reset configuration to default values, keeping the user's spotify_* settings."""
     try:
-        save_config(DEFAULT_CONFIG.copy())
+        config = DEFAULT_CONFIG.copy()
+        config.update({k: v for k, v in _read_raw_config().items() if k.startswith("spotify_")})
+        save_config(config)
         return True, "Configuration reset to defaults"
     except Exception as e:
         return False, f"Failed to reset config: {e}"

@@ -1,19 +1,20 @@
 import os
-import json
 import shutil
 from datetime import datetime
 from typing import Optional, List
 from utils.logger import log_info, log_warning, log_error
+from utils.jsonio import load_json, write_json_atomic
+from constants import APP_DIR
 
 # Default backup directory
-BACKUP_DIR = "data/backups"
+BACKUP_DIR = os.path.join(APP_DIR, "data", "backups")
 
 # Files that should be backed up
 BACKUP_TARGETS = [
-    "data/tracks.json",
-    "data/playlists.json",
-    "data/failed_downloads.json",
-    "data/download_history.json"
+    os.path.join(APP_DIR, "data", "tracks.json"),
+    os.path.join(APP_DIR, "data", "playlists.json"),
+    os.path.join(APP_DIR, "data", "failed_downloads.json"),
+    os.path.join(APP_DIR, "data", "download_history.json"),
 ]
 
 
@@ -183,24 +184,21 @@ def restore_backup(backup_path: str, target_path: str) -> bool:
         return False
     
     try:
-        # Validate JSON before restoring
-        with open(backup_path, "r", encoding="utf-8") as f:
-            json.load(f)  # Validate it's valid JSON
-        
+        data = load_json(backup_path, None)
+        if data is None:
+            log_error(f"Backup file is not valid JSON: {backup_path}")
+            return False
+
         # Create backup of current file before overwriting
         if os.path.exists(target_path):
             current_backup = backup_json_file(target_path)
             if current_backup:
                 log_info(f"Created backup of current file before restore")
         
-        # Restore the backup
-        shutil.copy2(backup_path, target_path)
+        write_json_atomic(target_path, data, indent=2)
         log_info(f"Restored backup: {os.path.basename(backup_path)} -> {target_path}")
         return True
     
-    except json.JSONDecodeError:
-        log_error(f"Backup file is not valid JSON: {backup_path}")
-        return False
     except Exception as e:
         log_error(f"Failed to restore backup: {e}")
         return False
