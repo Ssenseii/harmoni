@@ -271,7 +271,44 @@ class TestStatusBar(unittest.TestCase):
             window = MainWindow(dict(DEFAULT_CONFIG))
         self.addCleanup(window.deleteLater)
         self.assertTrue(window.spotify_view.is_connected)
-        self.assertEqual(window.spotify_status_label.text(), "Spotify: Connected")
+        self.assertEqual(window.title_bar.spotify_chip.label.text(), "Spotify: Connected")
+
+
+class TestTitleBarChips(unittest.TestCase):
+    def setUp(self):
+        from gui.main_window import MainWindow
+
+        with mock.patch("gui.main_window.AppUpdateCheckWorker.start"), \
+             mock.patch("gui.views.spotify_view.SpotifyPKCEAuth.load_cached_token", return_value=None), \
+             mock.patch("gui.views.spotify_view.SpotifyWorker"):
+            self.window = MainWindow(dict(DEFAULT_CONFIG))
+        self.addCleanup(self.window.deleteLater)
+        self.queue = self.window.download_queue
+        self.chip = self.window.title_bar.queue_chip
+
+    def test_starts_empty(self):
+        self.assertEqual(self.chip.label.text(), "Queue: 0")
+        self.assertEqual(self.window.title_bar.spotify_chip.label.text(), "Spotify: Not connected")
+
+    def test_counts_pending_items(self):
+        for i in range(3):
+            self.queue.add_track("Artist", f"Track {i}")
+        self.assertEqual(self.chip.label.text(), "Queue: 3")
+
+    def test_shows_downloading_and_remaining_then_updates_on_completion(self):
+        from gui.workers.download_queue import DownloadStatus
+
+        items = [self.queue.add_track("Artist", f"Track {i}") for i in range(3)]
+        self.queue.update_item_status(items[0].id, DownloadStatus.DOWNLOADING, progress=0)
+        self.assertIn("Downloading 1", self.chip.label.text())
+        self.assertIn("2 queued", self.chip.label.text())
+        self.queue.update_item_status(items[0].id, DownloadStatus.COMPLETED, progress=100)
+        self.assertEqual(self.chip.label.text(), "Queue: 2")
+
+    def test_clearing_queue_resets_chip(self):
+        self.queue.add_track("Artist", "Track")
+        self.queue.clear_all()
+        self.assertEqual(self.chip.label.text(), "Queue: 0")
 
 
 if __name__ == "__main__":

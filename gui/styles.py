@@ -17,6 +17,7 @@ COLORS = {
     "success": "#4caf50",
     "success_muted": "rgba(76, 175, 80, 0.15)",
     "error": "#ef5350",
+    "error_pressed": "#c0413e",
     "error_muted": "rgba(239, 83, 80, 0.15)",
     "warning": "#ff9800",
     "warning_muted": "rgba(255, 152, 0, 0.15)",
@@ -42,43 +43,6 @@ QWidget {{
 QWidget#titleBar {{
     background-color: {COLORS["background_dark"]};
     border-bottom: 1px solid {COLORS["border"]};
-}}
-
-QLabel#titleLabel {{
-    font-size: 13px;
-    font-weight: 600;
-    color: {COLORS["text"]};
-    padding-left: 8px;
-}}
-
-QPushButton#titleBarBtn {{
-    background-color: transparent;
-    border: none;
-    border-radius: 0px;
-    padding: 10px 16px;
-    min-width: 46px;
-    color: {COLORS["text_secondary"]};
-    font-size: 12px;
-}}
-
-QPushButton#titleBarBtn:hover {{
-    background-color: {COLORS["background_light"]};
-    color: {COLORS["text"]};
-}}
-
-QPushButton#closeBtn {{
-    background-color: transparent;
-    border: none;
-    border-radius: 0px;
-    padding: 10px 16px;
-    min-width: 46px;
-    color: {COLORS["text_secondary"]};
-    font-size: 12px;
-}}
-
-QPushButton#closeBtn:hover {{
-    background-color: {COLORS["error"]};
-    color: white;
 }}
 
 /* ===================== SIDEBAR ===================== */

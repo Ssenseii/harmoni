@@ -7,8 +7,8 @@ from PySide6.QtWidgets import (
 )
 import os
 
-from PySide6.QtCore import Qt, QSize, QPoint, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QIcon, QMouseEvent
+from PySide6.QtCore import QEvent, Qt, QSize, QPointF, QRectF, QTimer, QUrl
+from PySide6.QtGui import QColor, QDesktopServices, QIcon, QMouseEvent, QPainter, QPen
 
 from gui import notices
 from gui.styles import COLORS
@@ -23,166 +23,226 @@ from gui.workers.ytdlp_update_worker import YtdlpUpdateCheckWorker
 from version import __version__
 
 
+class WindowButton(QPushButton):
+    """(this is a... way to do it)"""
+
+    def __init__(self, kind: str, parent=None):
+        super().__init__(parent)
+        self.kind = kind
+        self.setFixedSize(46, 40)
+        self.setCursor(Qt.ArrowCursor)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setAttribute(Qt.WA_Hover, True)
+
+    def set_kind(self, kind: str):
+        """Switch the glyph (maximize <-> restore)."""
+        self.kind = kind
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        hovered = self.underMouse()
+        pressed = self.isDown()
+        close = self.kind == "close"
+        if hovered:
+            if close:
+                bg = QColor(COLORS["error_pressed"] if pressed else COLORS["error"])
+            else:
+                bg = QColor(COLORS["border_light"] if pressed else COLORS["background_light"])
+            painter.fillRect(self.rect(), bg)
+        if close and hovered:
+            color = QColor("white")
+        else:
+            color = QColor(COLORS["text"] if hovered else COLORS["text_secondary"])
+        pen = QPen(color, 1.2)
+        pen.setCapStyle(Qt.SquareCap)
+        painter.setPen(pen)
+        cx, cy = self.width() / 2, self.height() / 2
+        if self.kind == "min":
+            painter.drawLine(QPointF(cx - 5, cy + 0.5), QPointF(cx + 5, cy + 0.5))
+        elif self.kind == "max":
+            painter.drawRect(QRectF(cx - 5, cy - 5, 10, 10))
+        elif self.kind == "restore":
+            painter.drawRect(QRectF(cx - 5, cy - 2, 7, 7))
+            painter.drawPolyline([QPointF(cx - 2, cy - 2), QPointF(cx - 2, cy - 5),
+                                  QPointF(cx + 5, cy - 5), QPointF(cx + 5, cy + 2),
+                                  QPointF(cx + 2, cy + 2)])
+        else:
+            painter.drawLine(QPointF(cx - 5, cy - 5), QPointF(cx + 5, cy + 5))
+            painter.drawLine(QPointF(cx - 5, cy + 5), QPointF(cx + 5, cy - 5))
+
+
+class StatusChip(QWidget):
+    """status indicator"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 0, 6, 0)
+        layout.setSpacing(7)
+        self.dot = QLabel()
+        self.dot.setFixedSize(8, 8)
+        self.label = QLabel()
+        layout.addWidget(self.dot)
+        layout.addWidget(self.label)
+
+    def set_state(self, text: str, color: str, text_color: str = None, pulse: bool = False):
+        """Update the text and dot color.
+
+        @param text: Label text.
+        @param color: Dot color.
+        @param text_color: Label color (defaults to the secondary text color).
+        @param pulse: Draw a soft ring around the dot to show activity.
+        """
+        self.label.setText(text)
+        self.label.setStyleSheet(
+            f"background: transparent; font-size: 12px; font-weight: 500; "
+            f"color: {text_color or COLORS['text_secondary']};")
+        ring = f"border: 2px solid {color}; background: transparent;" if pulse else f"background: {color};"
+        self.dot.setStyleSheet(f"{ring} border-radius: 4px;")
+
+
 class TitleBar(QWidget):
-    """Custom title bar widget for frameless window."""
+    """Custom title bar for the frameless window: brand, current page and window controls."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent_window = parent
-        self._drag_pos = None
-        self._is_maximized = False
         self.setObjectName("titleBar")
         self.setFixedHeight(40)
         self._setup_ui()
 
     def _setup_ui(self):
         """Set up the title bar UI."""
-        from gui.resources.icons import get_app_icon, has_icon
+        from gui.resources.icons import get_app_icon
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 0, 0, 0)
+        layout.setContentsMargins(14, 0, 0, 0)
         layout.setSpacing(8)
 
-        # App icon
         app_icon = get_app_icon()
         if not app_icon.isNull():
             icon_label = QLabel()
             icon_label.setPixmap(app_icon.pixmap(20, 20))
-            icon_label.setFixedSize(24, 24)
+            icon_label.setFixedSize(22, 22)
             icon_label.setStyleSheet("background: transparent;")
             layout.addWidget(icon_label)
 
-        # App name with version badge
         self.title_label = QLabel("HARMONI")
-        self.title_label.setStyleSheet("""
-            font-size: 15px;
-            font-weight: 700;
-            color: #e3e4e0;
-            letter-spacing: 1px;
-        """)
+        self.title_label.setStyleSheet(
+            f"background: transparent; font-size: 14px; font-weight: 700; "
+            f"color: {COLORS['text']}; letter-spacing: 2px;")
         layout.addWidget(self.title_label)
 
-        # Version badge
         version_label = QLabel(f"v{__version__}")
-        version_label.setStyleSheet("""
-            font-size: 10px;
-            font-weight: 600;
-            color: #9a9ab0;
-            background-color: #383852;
-            padding: 2px 6px;
-            border-radius: 4px;
-        """)
+        version_label.setStyleSheet(
+            f"background: transparent; font-size: 11px; font-weight: 500; color: {COLORS['text_muted']};")
         layout.addWidget(version_label)
+
+        divider = QFrame()
+        divider.setFixedSize(1, 16)
+        divider.setStyleSheet(f"background-color: {COLORS['border_light']};")
+        layout.addSpacing(6)
+        layout.addWidget(divider)
+        layout.addSpacing(6)
+
+        self.page_label = QLabel("Home")
+        self.page_label.setStyleSheet(
+            f"background: transparent; font-size: 13px; font-weight: 500; color: {COLORS['text_secondary']};")
+        layout.addWidget(self.page_label)
 
         layout.addStretch()
 
-        # Window control buttons - using simple ASCII for reliability
-        self.min_btn = QPushButton()
-        self.min_btn.setText("-")
-        self.min_btn.setObjectName("titleBarBtn")
-        self.min_btn.setFixedSize(46, 40)
-        self.min_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 18px;
-                font-weight: 400;
-                border: none;
-                background: transparent;
-                color: #9a9ab0;
-            }
-            QPushButton:hover {
-                background-color: #383852;
-                color: #e3e4e0;
-            }
-        """)
+        self.queue_chip = StatusChip()
+        self.spotify_chip = StatusChip()
+        self.set_queue_state(0, 0)
+        self.set_spotify_connected(False)
+        layout.addWidget(self.queue_chip)
+        layout.addWidget(self.spotify_chip)
+        layout.addSpacing(10)
+
+        self.min_btn = WindowButton("min")
+        self.min_btn.setToolTip("Minimize")
         self.min_btn.clicked.connect(self._minimize)
-        layout.addWidget(self.min_btn)
-
-        self.max_btn = QPushButton()
-        self.max_btn.setText("[ ]")
-        self.max_btn.setObjectName("titleBarBtn")
-        self.max_btn.setFixedSize(46, 40)
-        self.max_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 11px;
-                font-weight: 600;
-                border: none;
-                background: transparent;
-                color: #9a9ab0;
-            }
-            QPushButton:hover {
-                background-color: #383852;
-                color: #e3e4e0;
-            }
-        """)
+        self.max_btn = WindowButton("max")
+        self.max_btn.setToolTip("Maximize")
         self.max_btn.clicked.connect(self._toggle_maximize)
-        layout.addWidget(self.max_btn)
-
-        self.close_btn = QPushButton()
-        self.close_btn.setText("X")
-        self.close_btn.setObjectName("closeBtn")
-        self.close_btn.setFixedSize(46, 40)
-        self.close_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 13px;
-                font-weight: 700;
-                border: none;
-                background: transparent;
-                color: #9a9ab0;
-            }
-            QPushButton:hover {
-                background-color: #ef5350;
-                color: white;
-            }
-        """)
+        self.close_btn = WindowButton("close")
+        self.close_btn.setToolTip("Close")
         self.close_btn.clicked.connect(self._close)
-        layout.addWidget(self.close_btn)
+        for btn in (self.min_btn, self.max_btn, self.close_btn):
+            layout.addWidget(btn)
+
+    def set_queue_state(self, pending: int, downloading: int):
+        """Show queue activity: items downloading now and items still waiting.
+
+        @param pending: Items waiting to download.
+        @param downloading: Items downloading right now.
+        """
+        if downloading:
+            text = f"Downloading {downloading}" + (f" · {pending} queued" if pending else "")
+            self.queue_chip.set_state(text, COLORS["accent_hover"], COLORS["text"], pulse=True)
+        elif pending:
+            self.queue_chip.set_state(f"Queue: {pending}", COLORS["accent_hover"], COLORS["text"])
+        else:
+            self.queue_chip.set_state("Queue: 0", COLORS["text_muted"])
+
+    def set_spotify_connected(self, connected: bool):
+        """Show the Spotify connection state."""
+        if connected:
+            self.spotify_chip.set_state("Spotify: Connected", COLORS["success"], COLORS["text"])
+        else:
+            self.spotify_chip.set_state("Spotify: Not connected", COLORS["text_muted"])
+
+    def set_page(self, name: str):
+        """Show the name of the current page."""
+        self.page_label.setText(name)
+
+    def sync_window_state(self):
+        """Match the maximize button to the real window state."""
+        maximized = bool(self.parent_window and self.parent_window.isMaximized())
+        self.max_btn.set_kind("restore" if maximized else "max")
+        self.max_btn.setToolTip("Restore" if maximized else "Maximize")
 
     def _minimize(self):
-        """Minimize the window."""
         if self.parent_window:
             self.parent_window.showMinimized()
 
     def _toggle_maximize(self):
-        """Toggle maximize/restore."""
         if self.parent_window:
-            if self._is_maximized:
+            if self.parent_window.isMaximized():
                 self.parent_window.showNormal()
-                self.max_btn.setText("[ ]")
             else:
                 self.parent_window.showMaximized()
-                self.max_btn.setText("[=]")
-            self._is_maximized = not self._is_maximized
+            self.sync_window_state()
 
     def _close(self):
-        """Close the window."""
         if self.parent_window:
             self.parent_window.close()
 
     def mousePressEvent(self, event: QMouseEvent):
-        """Handle mouse press for dragging."""
-        if event.button() == Qt.LeftButton:
-            self._drag_pos = event.globalPosition().toPoint() - self.parent_window.frameGeometry().topLeft()
-            event.accept()
-
-    def mouseMoveEvent(self, event: QMouseEvent):
-        """Handle mouse move for dragging."""
-        if event.buttons() == Qt.LeftButton and self._drag_pos:
-            # If maximized, restore before dragging
-            if self._is_maximized:
+        """Start a native window move (keeps Windows snap and multi-monitor behavior)."""
+        if event.button() == Qt.LeftButton and self.parent_window:
+            if self.parent_window.isMaximized():
                 self._toggle_maximize()
-                # Adjust drag position for restored window
-                self._drag_pos = QPoint(self.parent_window.width() // 2, 18)
-            self.parent_window.move(event.globalPosition().toPoint() - self._drag_pos)
+            handle = self.parent_window.windowHandle()
+            if handle:
+                handle.startSystemMove()
             event.accept()
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
-        """Handle double click for maximize toggle."""
         if event.button() == Qt.LeftButton:
             self._toggle_maximize()
 
 
 class MainWindow(QMainWindow):
     """Main application window with custom title bar and sidebar navigation."""
+
+    RESIZE_MARGIN = 5
+
+    NAV_ITEMS = ["Home", "Spotify", "YouTube", "Downloads", "Settings"]
 
     def __init__(self, config: dict):
         super().__init__()
@@ -192,6 +252,9 @@ class MainWindow(QMainWindow):
         # Frameless window with custom styling
         self.setWindowFlags(Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, False)
+
+        self.setMouseTracking(True)
+        self.setContentsMargins(self.RESIZE_MARGIN, self.RESIZE_MARGIN, self.RESIZE_MARGIN, self.RESIZE_MARGIN)
 
         self.setWindowTitle("HARMONI")
         self.setMinimumSize(600, 400)
@@ -407,15 +470,7 @@ class MainWindow(QMainWindow):
         sidebar.setIconSize(QSize(20, 20))
 
         # Navigation items - clean text labels without emojis
-        nav_items = [
-            "Home",
-            "Spotify",
-            "YouTube",
-            "Downloads",
-            "Settings",
-        ]
-
-        for label in nav_items:
+        for label in self.NAV_ITEMS:
             item = QListWidgetItem(label)
             item.setSizeHint(QSize(160, 48))
             sidebar.addItem(item)
@@ -530,13 +585,7 @@ class MainWindow(QMainWindow):
         exportify_btn.clicked.connect(self._open_exportify)
         status_bar.addPermanentWidget(exportify_btn)
 
-        # Download count
-        self.download_count_label = QLabel("Queue: 0")
-        status_bar.addPermanentWidget(self.download_count_label)
-
-        # Spotify status
-        self.spotify_status_label = QLabel("Spotify: Not connected")
-        status_bar.addPermanentWidget(self.spotify_status_label)
+        # Queue and Spotify status live in the title bar chips
 
     def _connect_signals(self):
         """Connect signals and slots."""
@@ -545,6 +594,7 @@ class MainWindow(QMainWindow):
 
         # Download queue updates
         self.download_queue.queue_updated.connect(self._update_download_count)
+        self.download_queue.item_updated.connect(self._update_download_count)
         self.download_queue.queue_updated.connect(self._refresh_quick_actions)
         self.download_queue.item_updated.connect(self._refresh_quick_actions)
         self.downloads_view.running_changed.connect(self._refresh_quick_actions)
@@ -565,6 +615,59 @@ class MainWindow(QMainWindow):
     def _on_nav_changed(self, index: int):
         """Handle sidebar navigation change."""
         self.view_stack.setCurrentIndex(index)
+        if 0 <= index < len(self.NAV_ITEMS):
+            self.title_bar.set_page(self.NAV_ITEMS[index])
+
+    def changeEvent(self, event):
+        """Keep the title bar's maximize button in sync with the window state."""
+        super().changeEvent(event)
+        if event.type() == QEvent.WindowStateChange and hasattr(self, "title_bar"):
+            self.title_bar.sync_window_state()
+            # No resize border while maximized or fullscreen
+            m = 0 if self.isMaximized() or self.isFullScreen() else self.RESIZE_MARGIN
+            self.setContentsMargins(m, m, m, m)
+
+    def _edges_at(self, pos) -> Qt.Edges:
+        """Window edges under a point in window coordinates (empty when not on the resize border)."""
+        if self.isMaximized() or self.isFullScreen():
+            return Qt.Edges()
+        m = self.RESIZE_MARGIN
+        edges = Qt.Edges()
+        if pos.x() < m:
+            edges |= Qt.LeftEdge
+        elif pos.x() >= self.width() - m:
+            edges |= Qt.RightEdge
+        if pos.y() < m:
+            edges |= Qt.TopEdge
+        elif pos.y() >= self.height() - m:
+            edges |= Qt.BottomEdge
+        return edges
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        """Show a resize cursor over the window border."""
+        edges = self._edges_at(event.position().toPoint())
+        left, right = bool(edges & Qt.LeftEdge), bool(edges & Qt.RightEdge)
+        top, bottom = bool(edges & Qt.TopEdge), bool(edges & Qt.BottomEdge)
+        if (left and top) or (right and bottom):
+            self.setCursor(Qt.SizeFDiagCursor)
+        elif (right and top) or (left and bottom):
+            self.setCursor(Qt.SizeBDiagCursor)
+        elif left or right:
+            self.setCursor(Qt.SizeHorCursor)
+        elif top or bottom:
+            self.setCursor(Qt.SizeVerCursor)
+        else:
+            self.unsetCursor()
+        super().mouseMoveEvent(event)
+
+    def mousePressEvent(self, event: QMouseEvent):
+        """Start a native resize when the border is pressed."""
+        edges = self._edges_at(event.position().toPoint())
+        if event.button() == Qt.LeftButton and edges and self.windowHandle():
+            self.windowHandle().startSystemResize(edges)
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
     def _navigate_to_view(self, view_name: str):
         """Navigate to a specific view by name."""
@@ -581,18 +684,13 @@ class MainWindow(QMainWindow):
         elif view_name in view_map:
             self.sidebar.setCurrentRow(view_map[view_name])
 
-    def _update_download_count(self, count: int):
-        """Update the download count in status bar."""
-        self.download_count_label.setText(f"Queue: {count}")
+    def _update_download_count(self, *_):
+        """Refresh the queue chip from the queue (pending and currently downloading)."""
+        self.title_bar.set_queue_state(self.download_queue.pending_count, self.download_queue.downloading_count)
 
     def _update_spotify_status(self, connected: bool):
         """Update Spotify connection status."""
-        if connected:
-            self.spotify_status_label.setText("Spotify: Connected")
-            self.spotify_status_label.setStyleSheet("color: #4caf50;")
-        else:
-            self.spotify_status_label.setText("Spotify: Not connected")
-            self.spotify_status_label.setStyleSheet("")
+        self.title_bar.set_spotify_connected(connected)
 
     def _on_config_saved(self):
         """Handle config save from settings."""
