@@ -7,7 +7,8 @@ from PySide6.QtCore import QThread, Signal
 
 from downloader.ytdlp_command import run_download
 from gui.workers.download_queue import DownloadQueue, DownloadStatus, QueueItem
-from utils import log_error, log_warning
+from utils import log_error, log_info, log_warning
+from utils.track_checker import find_existing_track
 
 
 class DownloadWorker(QThread):
@@ -133,6 +134,13 @@ class DownloadWorker(QThread):
         os.makedirs(output_dir, exist_ok=True)
 
         track_data = self._track_data(item)
+
+        # Skip tracks that are already on disk
+        existing = find_existing_track(output_dir, track_data)
+        if existing:
+            log_info(f"Already downloaded, skipping: {item.artist} - {item.track}")
+            return True, existing, None
+
         try:
             result = run_download(
                 track_data,

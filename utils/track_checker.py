@@ -32,6 +32,27 @@ def existing_track_keys_in_dir(directory: str) -> set:
     return keys
 
 
+def find_existing_track(directory: str, track: dict):
+    """
+    Return the path of an already-downloaded audio file matching the track, or None.
+    """
+    if not os.path.isdir(directory):
+        return None
+
+    audio_extensions = {".mp3", ".m4a", ".opus", ".flac", ".wav", ".ogg", ".webm"}
+    key = track_key(track)
+
+    try:
+        for filename in os.listdir(directory):
+            name, ext = os.path.splitext(filename)
+            if ext.lower() in audio_extensions and normalize_match_key(name) == key:
+                return os.path.join(directory, filename)
+    except OSError:
+        pass
+
+    return None
+
+
 def check_downloaded_files(output_dir, tracks):
     """
     Check which tracks have already been downloaded.
