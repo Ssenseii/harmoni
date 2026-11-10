@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HARMONI Docs</title>
+<link rel="icon" href="logo.png" type="image/png">
+<script>
+(function () {
+  try { var t = localStorage.getItem("theme"); if (t) document.documentElement.setAttribute("data-theme", t); } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#doc">Skip to documentation</a>
+<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="./"><img src="logo.png" alt="" width="24" height="24">HARMONI</a>
+    <nav aria-label="Main">
+      <a href="./">Download</a>
+      <a href="docs.html">Docs</a>
+      <a href="https://github.com/Ssenseii/harmoni">GitHub</a>
+      <button id="theme" type="button">Theme</button>
+    </nav>
+  </div>
+</header>
+<div class="wrap">
+  <nav class="doc-nav" id="docnav" aria-label="Documentation pages"></nav>
+  <main class="doc" id="doc" tabindex="-1" aria-live="polite"><p class="muted">Loading…</p></main>
+</div>
+<footer class="wrap foot">
+  <a href="./">Back to downloads</a> ·
+  <a href="https://github.com/Ssenseii/harmoni/tree/main/docs">Edit on GitHub</a>
+</footer>
+<script src="app.js"></script>
+<script src="docs.js"></script>
+</body>
+</html>

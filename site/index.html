@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HARMONI Download</title>
+<meta name="description" content="HARMONI downloads music from Spotify exports and YouTube. Free portable app for Windows, macOS and Linux. No install, no Python.">
+<link rel="icon" href="logo.png" type="image/png">
+<script>
+(function () {
+  try { var t = localStorage.getItem("theme"); if (t) document.documentElement.setAttribute("data-theme", t); } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to main content</a>
+<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="./"><img src="logo.png" alt="" width="24" height="24">HARMONI</a>
+    <nav aria-label="Main">
+      <a href="#download">Download</a>
+      <a href="#versions">All versions</a>
+      <a href="#docs">Docs</a>
+      <a href="https://github.com/Ssenseii/harmoni">GitHub</a>
+      <button id="theme" type="button">Theme</button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap" id="main" tabindex="-1">
+
+<section class="intro" aria-labelledby="t-intro">
+  <h1 id="t-intro"><img src="logo.png" alt="" width="48" height="48">HARMONI</h1>
+  <p class="lead">HARMONI is a desktop application that downloads music from Spotify playlist exports and from YouTube, using yt-dlp. It writes metadata to the files and includes tools for managing a music library.</p>
+  <p>It runs on Windows, macOS and Linux, has a graphical interface and a command-line mode, and is free and open source under the <a href="https://github.com/Ssenseii/harmoni/blob/main/LICENSE">project license</a>. Playlists are imported from <a href="https://exportify.net">Exportify</a> CSV files, so no Spotify API setup is needed. Connecting your own Spotify account through the Spotify API is also supported, but it is optional and requires creating a Spotify developer app first (see the <a href="docs.html?p=spotify-setup">Spotify setup guide</a>).</p>
+</section>
+
+<section id="download" aria-labelledby="t-dl">
+  <h2 id="t-dl">Download</h2>
+  <div id="primary" class="box" role="status" aria-live="polite">
+    <p class="muted">Loading latest release…</p>
+  </div>
+  <noscript><p>JavaScript is off. Get files from the <a href="https://github.com/Ssenseii/harmoni/releases/latest">latest release page</a>.</p></noscript>
+  <div id="howto" hidden></div>
+</section>
+
+<section id="versions" aria-labelledby="t-ver">
+  <h2 id="t-ver">All versions</h2>
+  <div class="filters" role="group" aria-label="Show files for platform">
+    <button type="button" data-f="all" aria-pressed="true">All</button>
+    <button type="button" data-f="windows" aria-pressed="false">Windows</button>
+    <button type="button" data-f="macos" aria-pressed="false">macOS</button>
+    <button type="button" data-f="linux" aria-pressed="false">Linux</button>
+  </div>
+  <div class="scroll" tabindex="0" role="region" aria-label="Release files table, scrollable">
+    <table id="table">
+      <caption class="sr-only">Downloadable files for every HARMONI version</caption>
+      <thead><tr><th scope="col">Version</th><th scope="col">Date</th><th scope="col">Platform</th><th scope="col">File</th><th scope="col" class="num">Size</th><th scope="col">Notes</th></tr></thead>
+      <tbody><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+    </table>
+  </div>
+  <p id="status" class="muted small" role="status" aria-live="polite"></p>
+</section>
+
+<section id="docs" aria-labelledby="t-docs">
+  <h2 id="t-docs">Documentation</h2>
+  <div class="cols">
+    <div>
+      <h3>Getting started</h3>
+      <ul>
+        <li><a href="docs.html?p=installation">Installation</a>: exe, Python or Docker</li>
+        <li><a href="docs.html?p=standalone">Standalone app</a>: run, security prompts, troubleshooting</li>
+        <li><a href="docs.html?p=gui">GUI guide</a>: desktop walkthrough</li>
+        <li><a href="docs.html?p=cli">CLI guide</a>: command-line reference</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Reference</h3>
+      <ul>
+        <li><a href="docs.html?p=spotify-setup">Spotify setup</a></li>
+        <li><a href="docs.html?p=configuration">Configuration</a></li>
+        <li><a href="docs.html?p=data-formats">Data formats</a></li>
+        <li><a href="docs.html?p=docker">Docker</a></li>
+      </ul>
+    </div>
+  </div>
+  <h3>Quick start</h3>
+  <ol>
+    <li>Download and run HARMONI (above).</li>
+    <li>Go to <a href="https://exportify.net">exportify.net</a>, log in with Spotify, export playlists as CSV.</li>
+    <li>Drag the CSV into HARMONI.</li>
+  </ol>
+</section>
+
+</main>
+
+<section class="wrap credits" id="credits" aria-labelledby="t-thanks">
+  <h2 id="t-thanks">Thanks</h2>
+  <p>HARMONI is built on the work of two projects. Thank you to the <a href="https://github.com/yt-dlp/yt-dlp">yt-dlp</a> team, whose downloader does the actual fetching, and to the <a href="https://ffmpeg.org">FFmpeg</a> team, whose tools handle audio conversion.</p>
+  <p>Thank you also to everyone who has contributed to HARMONI on GitHub.</p>
+  <p>Supporters are welcome, and so are issues. If something is broken or missing, please <a href="https://github.com/Ssenseii/harmoni/issues">open an issue</a>. If you like the project, you can <a href="https://github.com/Ssenseii/harmoni">star it on GitHub</a>.</p>
+</section>
+
+<footer class="wrap foot">
+  <a href="https://github.com/Ssenseii/harmoni">Source</a> ·
+  <a href="https://github.com/Ssenseii/harmoni/issues">Report a problem</a> ·
+  <a href="https://github.com/Ssenseii/harmoni/releases">GitHub releases</a>
+  <span id="updated"></span>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

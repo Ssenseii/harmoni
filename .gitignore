@@ -48,3 +48,6 @@ data/spotify_cache.json
 
 # my def
 project.json
+
+# built download site
+_site/
