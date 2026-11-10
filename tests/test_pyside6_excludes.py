@@ -26,7 +26,7 @@ SPEC_PATH = os.path.join(PROJECT_ROOT, "HARMONI.spec")
 BUILD_WORKFLOW_PATH = os.path.join(PROJECT_ROOT, ".github", "workflows", "build.yml")
 
 # Directories we don't ship / don't need to validate.
-SKIP_DIR_PARTS = {".git", "__pycache__", "node_modules", "venv", ".venv", "build", "dist"}
+SKIP_DIR_PARTS = {".git", "__pycache__", "node_modules", "venv", ".venv", "build", "dist", "site", "_site"}  # site/ is the website build script, not app code (and shadows stdlib `site`)
 
 
 def _load_excluded_modules():
