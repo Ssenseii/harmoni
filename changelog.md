@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **Album tags for Spotify downloads**: Files are now tagged with album artist, track number (`n/total`) and disc number in every format (MP3, M4A, FLAC, Ogg/Opus, AAC, WAV), whatever the metadata template. Without them, taggers like beets split one album into many.
+- **Wrong versions from YouTube**: When the track length is known, live, remix, cover, sped-up and similar videos are skipped unless the track title asks for that version.
 
 ## [1.3.0] - 2026-11-05
 
