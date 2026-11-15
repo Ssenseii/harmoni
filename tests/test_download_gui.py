@@ -138,7 +138,7 @@ class TestDownloadWorker(unittest.TestCase):
         release.set()
         with mock.patch(RUN_DOWNLOAD, side_effect=_blocking_run(proc, release)):
             worker.start()
-            self.assertTrue(_wait_until(lambda: worker._process is not None))
+            self.assertTrue(_wait_until(lambda: worker._processes))
             worker.cancel()
             self.assertTrue(worker.wait(5000))
         proc.terminate.assert_called()
@@ -211,6 +211,119 @@ class TestDownloadWorker(unittest.TestCase):
         self.assertEqual(item.status, DownloadStatus.FAILED)
 
 
+class TestParallelDownloads(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.config = {"output_dir": self.tmp.name, "audio_format": "mp3", "enable_metadata_embedding": False}
+        patcher = mock.patch(CONFIGURE_FFMPEG, return_value="ffmpeg")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_runs_up_to_concurrent_downloads_at_once_and_each_track_once(self):
+        queue = DownloadQueue()
+        items = queue.add_tracks([{"artist": f"Artist {i}", "track": f"Song {i}"} for i in range(7)])
+        worker = DownloadWorker(queue, dict(self.config, concurrent_downloads=3))
+        lock = threading.Lock()
+        running = [0]
+        peak = [0]
+        seen = []
+
+        def fake(track, *args, **kwargs):
+            with lock:
+                running[0] += 1
+                peak[0] = max(peak[0], running[0])
+                seen.append(track["track"])
+            time.sleep(0.05)
+            with lock:
+                running[0] -= 1
+            return SUCCESS
+
+        received = []
+        worker.all_completed.connect(lambda s, f: received.append((s, f)))
+        with mock.patch(RUN_DOWNLOAD, side_effect=fake):
+            worker.run()
+
+        self.assertEqual(peak[0], 3)
+        self.assertEqual(sorted(seen), sorted(i.track for i in items))
+        self.assertTrue(all(i.status == DownloadStatus.COMPLETED for i in items))
+        self.assertEqual(received, [(7, 0)])
+
+    def test_default_downloads_one_at_a_time(self):
+        queue = DownloadQueue()
+        queue.add_tracks([{"artist": "A", "track": f"Song {i}"} for i in range(3)])
+        worker = DownloadWorker(queue, self.config)
+        lock = threading.Lock()
+        running = [0]
+        peak = [0]
+
+        def fake(*args, **kwargs):
+            with lock:
+                running[0] += 1
+                peak[0] = max(peak[0], running[0])
+            time.sleep(0.02)
+            with lock:
+                running[0] -= 1
+            return SUCCESS
+
+        with mock.patch(RUN_DOWNLOAD, side_effect=fake):
+            worker.run()
+        self.assertEqual(peak[0], 1)
+
+    def test_concurrency_is_clamped(self):
+        for value, expected in [(0, 1), (-2, 1), (3, 3), (20, 8), ("abc", 1), (None, 1)]:
+            worker = DownloadWorker(DownloadQueue(), dict(self.config, concurrent_downloads=value))
+            self.assertEqual(worker._concurrency(), expected, value)
+
+    def test_cancel_terminates_every_running_download(self):
+        queue = DownloadQueue()
+        items = queue.add_tracks([{"artist": "A", "track": f"Song {i}"} for i in range(4)])
+        worker = DownloadWorker(queue, dict(self.config, concurrent_downloads=2))
+        procs = [_fake_process(), _fake_process()]
+        handed = iter(procs)
+        release = threading.Event()
+        release.set()
+
+        def fake(*args, popen_hook=None, cancel_check=None, **kwargs):
+            return _blocking_run(next(handed), release)(*args, popen_hook=popen_hook, cancel_check=cancel_check, **kwargs)
+
+        with mock.patch(RUN_DOWNLOAD, side_effect=fake):
+            worker.start()
+            self.assertTrue(_wait_until(lambda: len(worker._processes) == 2))
+            worker.cancel()
+            self.assertTrue(worker.wait(5000))
+
+        for proc in procs:
+            proc.terminate.assert_called()
+        statuses = sorted(i.status.value for i in items)
+        self.assertEqual(statuses, ["cancelled", "cancelled", "pending", "pending"])
+        self.assertFalse(worker._processes)
+
+    def test_process_started_after_cancel_is_terminated(self):
+        worker = DownloadWorker(DownloadQueue(), self.config)
+        worker.cancel()
+        proc = _fake_process()
+        worker._add_process(proc)
+        proc.terminate.assert_called_once()
+
+    def test_failure_in_one_slot_does_not_stop_the_others(self):
+        queue = DownloadQueue()
+        items = queue.add_tracks([{"artist": "A", "track": f"Song {i}"} for i in range(4)])
+        worker = DownloadWorker(queue, dict(self.config, concurrent_downloads=2))
+
+        def fake(track, *args, **kwargs):
+            if track["track"] == "Song 1":
+                raise RuntimeError("boom")
+            return SUCCESS
+
+        with mock.patch(RUN_DOWNLOAD, side_effect=fake):
+            worker.run()
+        by_name = {i.track: i for i in items}
+        self.assertEqual(by_name["Song 1"].status, DownloadStatus.FAILED)
+        self.assertEqual(by_name["Song 1"].error_message, "boom")
+        self.assertEqual(sum(i.status == DownloadStatus.COMPLETED for i in items), 3)
+
+
 class TestDownloadsView(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -244,7 +357,7 @@ class TestDownloadsView(unittest.TestCase):
              mock.patch("gui.views.downloads_view.DownloadWorker", side_effect=DownloadWorker) as ctor:
             self.view._start_downloads()
             worker = self.view.worker
-            self.assertTrue(_wait_until(lambda: worker._process is not None))
+            self.assertTrue(_wait_until(lambda: worker._processes))
 
             self.view._cancel_downloads()
             proc.terminate.assert_called()
@@ -335,7 +448,7 @@ class TestDownloadsView(unittest.TestCase):
         with mock.patch(RUN_DOWNLOAD, side_effect=_blocking_run(proc, release)):
             self.view._start_downloads()
             worker = self.view.worker
-            self.assertTrue(_wait_until(lambda: worker._process is not None))
+            self.assertTrue(_wait_until(lambda: worker._processes))
             with mock.patch.object(worker, "wait", wraps=worker.wait) as wait:
                 self.view._clear_all()
             self._finish_worker()

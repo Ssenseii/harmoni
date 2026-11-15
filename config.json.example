@@ -5,6 +5,7 @@
   "output_dir": "music",
   "audio_format": "mp3",
   "sleep_between": 5,
+  "concurrent_downloads": 1,
   "average_download_time": 20,
   "retry_attempts": 3,
   "retry_delay": 5,

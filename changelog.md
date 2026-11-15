@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Parallel downloads**: Settings has a "Parallel downloads" field (1-8, default 1) for how many tracks the desktop app downloads at once. Cancel stops every running download, and pause lets running tracks finish before starting new ones.
+
+### Fixed
+- **MusicBrainz rate limit with parallel downloads**: Lookups from several download threads are spaced one second apart, as MusicBrainz asks.
+
 ## [1.3.0] - 2026-11-05
 
 ### Added
