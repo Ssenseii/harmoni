@@ -1,6 +1,8 @@
 """Download worker thread for GUI."""
 
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from PySide6.QtCore import QThread, Signal
@@ -10,10 +12,13 @@ from gui.workers.download_queue import DownloadQueue, DownloadStatus, QueueItem
 from utils import log_error, log_info, log_warning
 from utils.track_checker import find_existing_track
 
+DEFAULT_CONCURRENT_DOWNLOADS = 1
+MAX_CONCURRENT_DOWNLOADS = 8
+
 
 class DownloadWorker(QThread):
     """
-    Worker thread that processes downloads from the queue.
+    Worker thread that processes downloads from the queue, running up to concurrent_downloads tracks at once.
 
     Signals:
         track_started: Emitted when a track download begins (artist, track)
@@ -35,7 +40,10 @@ class DownloadWorker(QThread):
         self.config = config
         self._cancelled = False
         self._paused = False
-        self._process = None
+        self._processes = set()
+        self._lock = threading.Lock()
+        self._success_count = 0
+        self._fail_count = 0
 
     def run(self):
         """Process all pending downloads in the queue."""
@@ -57,28 +65,53 @@ class DownloadWorker(QThread):
             self.all_completed.emit(0, len(pending))
             return
 
-        success_count = 0
-        fail_count = 0
-
+        self._success_count = 0
+        self._fail_count = 0
         self.queue.set_running(True)
 
+        slots = self._concurrency()
+        with ThreadPoolExecutor(max_workers=slots, thread_name_prefix="download") as pool:
+            futures = [pool.submit(self._run_slot) for _ in range(slots)]
+        for future in futures:
+            if future.exception() is not None:
+                log_error(f"Download slot stopped: {future.exception()}")
+
+        self.queue.set_running(False)
+        self.queue.mark_queue_completed()
+        self.all_completed.emit(self._success_count, self._fail_count)
+
+    def _concurrency(self) -> int:
+        """Return how many downloads run at once, from concurrent_downloads clamped to 1-8."""
+        try:
+            value = int(self.config.get("concurrent_downloads", DEFAULT_CONCURRENT_DOWNLOADS))
+        except (TypeError, ValueError):
+            value = DEFAULT_CONCURRENT_DOWNLOADS
+        return max(1, min(MAX_CONCURRENT_DOWNLOADS, value))
+
+    def _claim_next(self) -> Optional[QueueItem]:
+        """Mark the next pending item as downloading and return it, so no two slots take the same track."""
+        with self._lock:
+            item = self.queue.get_next_pending()
+            if item:
+                self.queue.update_item_status(item.id, DownloadStatus.DOWNLOADING, progress=0)
+            return item
+
+    def _run_slot(self):
+        """Download pending items one after another until the queue is empty or cancelled."""
         while not self._cancelled:
-            # Check for pause
             if self._paused:
                 self.msleep(100)
                 continue
 
-            # Get next pending item
-            item = self.queue.get_next_pending()
+            item = self._claim_next()
             if not item:
                 break
-
-            # Mark as downloading
-            self.queue.update_item_status(item.id, DownloadStatus.DOWNLOADING, progress=0)
             self.track_started.emit(item.artist, item.track)
 
-            # Download the track
-            success, file_path, error = self._download_single(item)
+            try:
+                success, file_path, error = self._download_single(item)
+            except Exception as e:
+                success, file_path, error = False, None, str(e)
 
             if success:
                 self.queue.update_item_status(
@@ -88,7 +121,8 @@ class DownloadWorker(QThread):
                     file_path=file_path
                 )
                 self.track_completed.emit(item.id, True, file_path or "")
-                success_count += 1
+                with self._lock:
+                    self._success_count += 1
             elif self._cancelled:
                 self.queue.update_item_status(
                     item.id,
@@ -102,11 +136,8 @@ class DownloadWorker(QThread):
                     error_message=error
                 )
                 self.track_failed.emit(item.id, error or "Unknown error")
-                fail_count += 1
-
-        self.queue.set_running(False)
-        self.queue.mark_queue_completed()
-        self.all_completed.emit(success_count, fail_count)
+                with self._lock:
+                    self._fail_count += 1
 
     def _download_single(self, item: QueueItem) -> tuple[bool, Optional[str], Optional[str]]:
         """
@@ -141,19 +172,26 @@ class DownloadWorker(QThread):
             log_info(f"Already downloaded, skipping: {item.artist} - {item.track}")
             return True, existing, None
 
+        started = []
+
+        def on_popen(process):
+            started.append(process)
+            self._add_process(process)
+
         try:
             result = run_download(
                 track_data,
                 output_dir,
                 audio_format,
                 self.config,
-                popen_hook=self._set_process,
+                popen_hook=on_popen,
                 cancel_check=lambda: self._cancelled,
             )
         except Exception as e:
             return False, None, str(e)
         finally:
-            self._process = None
+            with self._lock:
+                self._processes.difference_update(started)
 
         if result.success and result.path:
             self._embed_metadata(result.path, item)
@@ -170,12 +208,27 @@ class DownloadWorker(QThread):
         track_data["track"] = item.track
         return track_data
 
-    def _set_process(self, process):
-        """Remember the running yt-dlp process so cancel() can stop it.
+    def _add_process(self, process):
+        """Remember a running yt-dlp process so cancel() can stop it, stopping it at once if cancel() already ran.
 
         @param process: The Popen started by run_download.
         """
-        self._process = process
+        with self._lock:
+            self._processes.add(process)
+        if self._cancelled:
+            self._terminate(process)
+
+    @staticmethod
+    def _terminate(process):
+        """Terminate a yt-dlp process that is still running.
+
+        @param process: Popen to stop.
+        """
+        if process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                pass
 
     def _embed_metadata(self, file_path: str, item: QueueItem):
         """Embed metadata from the item's full track dict into the downloaded file.
@@ -205,14 +258,12 @@ class DownloadWorker(QThread):
             log_error(f"Metadata embedding failed for {file_path}: {e}")
 
     def cancel(self):
-        """Cancel the download process and terminate a running yt-dlp."""
+        """Cancel the downloads and terminate every running yt-dlp."""
         self._cancelled = True
-        process = self._process
-        if process is not None and process.poll() is None:
-            try:
-                process.terminate()
-            except OSError:
-                pass
+        with self._lock:
+            processes = list(self._processes)
+        for process in processes:
+            self._terminate(process)
 
     def pause(self):
         """Pause the download process."""

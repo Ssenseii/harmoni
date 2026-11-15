@@ -5,6 +5,7 @@ import urllib.parse
 import urllib.request 
 import socket
 import random
+import threading
 from dataclasses import dataclass
 from functools import lru_cache 
 from typing import Any, Dict, Optional, Tuple
@@ -286,6 +287,17 @@ class MusicBrainzMatch:
 
 
 _last_mb_request_at = 0.0
+_mb_rate_lock = threading.Lock()
+
+
+def _wait_for_mb_slot() -> None:
+    """Sleep until MusicBrainz's rate limit allows another request and claim that slot, safe across download threads."""
+    global _last_mb_request_at
+    with _mb_rate_lock:
+        wait = MB_RATE_LIMIT_SECONDS - (time.time() - _last_mb_request_at)
+        if wait > 0:
+            time.sleep(wait)
+        _last_mb_request_at = time.time()
 
 
 def _mb_get_json(url: str, timeout: int = 15, max_retries: int = 3, base_delay: float = 0.75) -> Optional[Dict[str, Any]]:
@@ -306,10 +318,7 @@ def _mb_get_json(url: str, timeout: int = 15, max_retries: int = 3, base_delay: 
     for attempt in range(max_retries + 1):
         try:
             # Rate limiting - ensure we don't exceed MusicBrainz limits
-            now = time.time()
-            wait = MB_RATE_LIMIT_SECONDS - (now - _last_mb_request_at)
-            if wait > 0:
-                time.sleep(wait)
+            _wait_for_mb_slot()
             
             # Create request with proper headers
             req = urllib.request.Request(

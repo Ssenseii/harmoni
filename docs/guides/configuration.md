@@ -11,6 +11,7 @@ All settings are stored in `config.json` at the project root.
   "output_dir": "music",
   "audio_format": "mp3",
   "sleep_between": 5,
+  "concurrent_downloads": 1,
   "average_download_time": 20,
   "retry_attempts": 3,
   "retry_delay": 5,
@@ -52,6 +53,7 @@ All settings are stored in `config.json` at the project root.
 |---------|------|---------|-------|-------------|
 | `audio_format` | string | `"mp3"` | mp3, wav, flac, aac, ogg, m4a | Default audio format |
 | `sleep_between` | int | `5` | 0-60 | Seconds between downloads (rate limiting) |
+| `concurrent_downloads` | int | `1` | 1-8 | Tracks the desktop app downloads at the same time |
 | `average_download_time` | int | `20` | 1-300 | Estimated time per track (for ETA) |
 | `match_duration_tolerance` | int | `15` | 0-120 | Seconds a YouTube result may differ from the track length when the length is known |
 

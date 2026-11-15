@@ -28,6 +28,7 @@ DEFAULT_CONFIG = {
     "output_dir": "music",
     "audio_format": "mp3",
     "sleep_between": 5,
+    "concurrent_downloads": 1,  # tracks the GUI downloads at once (1-8)
     "average_download_time": 20,
     "retry_attempts": 3,
     "retry_delay": 5,
@@ -134,6 +135,7 @@ CONFIG_SCHEMA = {
         "choices": ["mp3", "wav", "flac", "aac", "ogg", "m4a"],
     },
     "sleep_between": {"type": (int, float), "required": True, "min": 0, "max": 60},
+    "concurrent_downloads": {"type": int, "required": False, "min": 1, "max": 8},
     "average_download_time": {"type": (int, float), "required": False, "min": 1, "max": 300},
     "retry_attempts": {"type": int, "required": False, "min": 0, "max": 10},
     "retry_delay": {"type": (int, float), "required": False, "min": 0, "max": 60},
