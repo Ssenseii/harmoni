@@ -15,6 +15,8 @@ from utils.system import hidden_subprocess_kwargs
 from utils.ytdlp_args import build_extra_ytdlp_args
 
 DEFAULT_DURATION_TOLERANCE = 15
+# Video titles with these words are a different rendition of the song, skipped unless the track title has the same word.
+VARIANT_WORDS = ("live", "cover", "remix", "karaoke", "instrumental", "sped up", "slowed", "nightcore", "8d", "reverb")
 MAX_DOWNLOADS_REACHED = 101
 
 
@@ -67,6 +69,17 @@ def _duration_tolerance(config: dict) -> float:
         return max(0.0, float(config.get("match_duration_tolerance", DEFAULT_DURATION_TOLERANCE)))
     except (TypeError, ValueError):
         return float(DEFAULT_DURATION_TOLERANCE)
+
+
+def _variant_filter(track_title: str) -> Optional[str]:
+    """Return a yt-dlp match-filter clause that rejects live, remix, cover and similar videos, or None when the title asks for all of them.
+
+    @param track_title: The track's own title. A variant word in it, as in "Song (Live)", allows that word.
+    """
+    words = [w for w in VARIANT_WORDS if not re.search(rf"\b{re.escape(w)}\b", track_title, re.IGNORECASE)]
+    if not words:
+        return None
+    return f"title !~= '(?i)\\b({'|'.join(words)})\\b'"
 
 
 def _ffmpeg_location() -> Optional[str]:
@@ -201,9 +214,13 @@ def build_search_command(
         tolerance = _duration_tolerance(config)
         low = max(0, math.floor(seconds - tolerance))
         high = math.ceil(seconds + tolerance)
+        match_filter = f"duration > {low} & duration < {high}"
+        variant_filter = _variant_filter(track_title)
+        if variant_filter:
+            match_filter += f" & {variant_filter}"
         cmd += [
             f"ytsearch5:{query}",
-            "--match-filter", f"duration > {low} & duration < {high}",
+            "--match-filter", match_filter,
             "--max-downloads", "1",
         ]
 
@@ -233,7 +250,7 @@ _ERROR_PATTERNS = (
     (("ffmpeg not found", "ffprobe and ffmpeg not found", "ffmpeg is not installed"), "FFmpeg not found. Install FFmpeg or set its path in settings."),
     (("no supported javascript runtime",), "YouTube needs a JavaScript runtime for this download. " + NO_JS_RUNTIME_MESSAGE),
     (("requested format is not available", "only images are available"), "YouTube offered no audio for this video. Retry later, or update yt-dlp."),
-    (("does not pass filter",), "No search result matched the track length."),
+    (("does not pass filter",), "No search result matched the track length, or every match was a live, remix or cover version."),
     (("no video results", "no results"), "No YouTube results for this track."),
 )
 

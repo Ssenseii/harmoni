@@ -313,6 +313,17 @@ class SpotifyClient:
     def current_user_saved_tracks(self, *, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
         return self.request_json("GET", "/me/tracks", params={"limit": limit, "offset": offset})
 
+    def search_albums(self, query: str, *, limit: int = 10, offset: int = 0) -> Dict[str, Any]:
+        # /search rejects limit > 10 for development-mode apps ("400 Invalid limit").
+        return self.request_json(
+            "GET",
+            "/search",
+            params={"q": query, "type": "album", "limit": min(10, int(limit)), "offset": offset},
+        )
+
+    def album_tracks(self, album_id: str, *, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+        return self.request_json("GET", f"/albums/{album_id}/tracks", params={"limit": limit, "offset": offset})
+
     # -----------------
     # High-level helpers (fully paged)
     # -----------------

@@ -160,6 +160,12 @@ Once connected:
 - Browse your liked songs
 - Select tracks to download
 
+> Spotify only lets this app read tracks from playlists you own or collaborate on. Playlists you merely follow can't be loaded; export those with [Exportify](https://exportify.net) instead.
+
+### Searching for Albums
+
+Type in the **Search albums...** box above the playlist list and press Enter. The list switches to the top 10 matching albums (Spotify's maximum per search), shown as `Artist - Album (N tracks)`. Albums work exactly like playlists: double-click or **Load** to see their tracks, or **Download** to queue the whole album. Click **My Playlists** to go back to your library.
+
 ---
 
 ## Status Bar

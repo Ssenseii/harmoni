@@ -61,7 +61,7 @@ class TestBuildSearchCommand(unittest.TestCase):
         with NO_FFMPEG:
             cmd = build_search_command(track, "out", "mp3", {})
         self.assertIn("ytsearch5:Artist A - Song One", cmd)
-        self.assertEqual(_flag_value(cmd, "--match-filter"), "duration > 185 & duration < 215")
+        self.assertTrue(_flag_value(cmd, "--match-filter").startswith("duration > 185 & duration < 215 & title !~= "))
         self.assertEqual(_flag_value(cmd, "--max-downloads"), "1")
         self.assertIn("--no-playlist", cmd)
 
@@ -69,7 +69,7 @@ class TestBuildSearchCommand(unittest.TestCase):
         track = {"artist": "A", "track": "B", "duration_ms": "180500"}
         with NO_FFMPEG:
             cmd = build_search_command(track, "out", "mp3", {})
-        self.assertEqual(_flag_value(cmd, "--match-filter"), "duration > 165 & duration < 196")
+        self.assertTrue(_flag_value(cmd, "--match-filter").startswith("duration > 165 & duration < 196 & title !~= "))
 
     def test_empty_or_bad_duration_falls_back_to_single_search(self):
         for value in ("", "abc", 0, None):
@@ -82,7 +82,31 @@ class TestBuildSearchCommand(unittest.TestCase):
         track = {"artist": "A", "track": "B", "duration_ms": 100000}
         with NO_FFMPEG:
             cmd = build_search_command(track, "out", "mp3", {"match_duration_tolerance": 5})
-        self.assertEqual(_flag_value(cmd, "--match-filter"), "duration > 95 & duration < 105")
+        self.assertTrue(_flag_value(cmd, "--match-filter").startswith("duration > 95 & duration < 105 & title !~= "))
+
+    def test_duration_filter_rejects_variant_titles(self):
+        track = {"artist": "Artist A", "track": "Song One", "duration_ms": 200000}
+        with NO_FFMPEG:
+            match_filter = _flag_value(build_search_command(track, "out", "mp3", {}), "--match-filter")
+        try:
+            from yt_dlp.utils import match_str
+        except ImportError:
+            self.skipTest("yt_dlp not importable")
+        for title, ok in [
+            ("Artist A - Song One (Official Audio)", True),
+            ("Artist A - Song One (Live at Wembley)", False),
+            ("Song One [Remix]", False),
+            ("Song One - sped up", False),
+            ("Delivery", True),
+        ]:
+            self.assertEqual(match_str(match_filter, {"duration": 200, "title": title}), ok, title)
+
+    def test_variant_in_track_title_is_allowed(self):
+        track = {"artist": "A", "track": "Song (Live)", "duration_ms": 200000}
+        with NO_FFMPEG:
+            match_filter = _flag_value(build_search_command(track, "out", "mp3", {}), "--match-filter")
+        self.assertNotIn("live", match_filter)
+        self.assertIn("remix", match_filter)
 
     def test_ffmpeg_location_added_when_found(self):
         with mock.patch("utils.ffmpeg.get_ffmpeg_path", return_value=r"C:\ff\ffmpeg.exe"):

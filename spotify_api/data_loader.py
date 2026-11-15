@@ -205,6 +205,64 @@ class SpotifyDataLoader:
             should_cancel=should_cancel,
         )
 
+    def search_albums(self, query: str, *, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search the Spotify catalog for albums.
+
+        Results are shaped like list_all_playlists() entries (id, name, tracks_total) plus kind="album", so the playlist UI can show and load them. "name" is "Artist - Title".
+
+        @param query: Search text. A blank query returns [] without a request.
+        @param limit: Number of results, at most 10 for development-mode apps.
+        """
+        query = (query or "").strip()
+        if not query:
+            return []
+
+        page = self.client.search_albums(query, limit=limit)
+        items = (page.get("albums") or {}).get("items") or []
+        return [a for a in (self._normalize_album(item) for item in items) if a]
+
+    def load_album_tracks(
+        self,
+        album: Dict[str, Any],
+        *,
+        limit: int = 50,
+        max_tracks: Optional[int] = None,
+        on_batch: Optional[Callable[[List[Dict[str, Any]], int], None]] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return an album's tracks as dicts suitable for HARMONI workflows.
+
+        Album track objects are "simplified" and carry no album info, so name, release date and artwork are filled in from album.
+
+        @param album: A raw Spotify album object or a search_albums() result.
+        @param limit: Page size.
+        @param max_tracks: Optional safety cap to stop paging after N normalized tracks.
+        @param on_batch: Optional callback given each page's normalized tracks and the total Spotify reports.
+        @param should_cancel: Optional callable checked before each page request.
+        """
+        album_id = album.get("id")
+        album_info = {
+            "name": album.get("title") or album.get("name"),
+            "release_date": album.get("release_date"),
+            "images": [{"url": album["image_url"]}] if album.get("image_url") else album.get("images"),
+            "artists": album.get("artists") if isinstance(album.get("artists"), list) else [{"name": album.get("artist")}],
+            "total_tracks": album.get("tracks_total") or album.get("total_tracks"),
+        }
+
+        def convert(item: Any) -> Optional[Dict[str, Any]]:
+            if not isinstance(item, dict):
+                return None
+            return self._normalize_track({**item, "album": album_info})
+
+        return self._collect_pages(
+            lambda lim, off: self.client.album_tracks(album_id, limit=lim, offset=off),
+            convert,
+            limit=limit,
+            max_items=max_tracks,
+            on_batch=on_batch,
+            should_cancel=should_cancel,
+        )
+
     def load_user_playlists_with_tracks(
         self,
         *,
@@ -271,6 +329,26 @@ class SpotifyDataLoader:
         return ", ".join(uniq)
 
     @classmethod
+    def _normalize_album(cls, album_obj: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(album_obj, dict) or not album_obj.get("id") or not album_obj.get("name"):
+            return None
+
+        title = str(album_obj.get("name")).strip()
+        artist = cls._normalize_artist_list(album_obj.get("artists"))
+        images = album_obj.get("images") or []
+
+        return {
+            "kind": "album",
+            "id": album_obj.get("id"),
+            "title": title,
+            "artist": artist,
+            "name": f"{artist} - {title}" if artist else title,
+            "tracks_total": album_obj.get("total_tracks"),
+            "release_date": album_obj.get("release_date"),
+            "image_url": images[0].get("url") if images and isinstance(images[0], dict) else None,
+        }
+
+    @classmethod
     def _normalize_track(cls, track_obj: Any) -> Optional[Dict[str, Any]]:
         if not isinstance(track_obj, dict):
             return None
@@ -284,6 +362,8 @@ class SpotifyDataLoader:
         album = track_obj.get("album") or {}
         album_name = album.get("name") if isinstance(album, dict) else None
         release_date = album.get("release_date") if isinstance(album, dict) else None
+        album_artist = cls._normalize_artist_list(album.get("artists")) if isinstance(album, dict) else ""
+        total_tracks = album.get("total_tracks") if isinstance(album, dict) else None
         
         # Extract album artwork URL (largest available image)
         album_art_url = None
@@ -300,6 +380,10 @@ class SpotifyDataLoader:
             "artist": artist_name or "",
             "track": (track_obj.get("name") or ""),
             "album": album_name or "",
+            "album_artist": album_artist,
+            "track_number": track_obj.get("track_number"),
+            "disc_number": track_obj.get("disc_number"),
+            "total_tracks": total_tracks,
             "album_art_url": album_art_url,
             "uri": uri,
             "spotify_id": spotify_id,
